@@ -46,13 +46,15 @@ def main() -> None:
                 PORT,
             )
 
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path=webhook_path,
-            webhook_url=full_url,
-            drop_pending_updates=True,
-        )
+        webhook_kwargs = {
+            "listen": "0.0.0.0",
+            "port": PORT,
+            "url_path": webhook_path,
+            "drop_pending_updates": True,
+        }
+        if full_url:
+            webhook_kwargs["webhook_url"] = full_url
+        app.run_webhook(**webhook_kwargs)
     else:
         # ── Polling mode (local development) ──────────────────────────
         logger.info("🚀 Starting bot in POLLING mode (local dev)")
