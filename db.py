@@ -68,6 +68,10 @@ class GetSummarySchema(BaseModel):
     start_date: str = Field(description="Start date in YYYY-MM-DD format.")
     end_date: str = Field(description="End date in YYYY-MM-DD format.")
 
+class GetRecentExpensesSchema(BaseModel):
+    telegram_id: int = Field(description="The user's Telegram ID (int64).")
+    limit: int = Field(default=10, description="The number of recent expenses to retrieve (default 10).")
+
 # ==========================================
 # 2. FIRESTORE TOOLS
 # ==========================================
@@ -239,3 +243,40 @@ def tool_get_summary(data: GetSummarySchema) -> str:
     except Exception as e:
         logger.error(f"Failed to get summary: {e}", exc_info=True)
         return f"ERROR: Failed to calculate summary due to a database error: {str(e)}"
+
+def tool_get_recent_expenses(data: GetRecentExpensesSchema) -> str:
+    """Gets a list of the most recent expenses logged across all users, in ascending order (oldest first among the recent batch)."""
+    if not db:
+        return "ERROR: Database not connected."
+    
+    try:
+        # We fetch the latest N globally. Using UID descending to get the newest.
+        expenses_ref = db.collection(COLLECTION_NAME)
+        query = expenses_ref.order_by("uid", direction=firestore.Query.DESCENDING).limit(data.limit)
+        results = query.stream()
+        
+        docs = []
+        for doc in results:
+            docs.append(doc.to_dict())
+            
+        # Reverse to ascending order (so the oldest of the recent 10 is first, the absolute newest is last)
+        docs.reverse()
+        
+        if not docs:
+            return "No expenses found."
+            
+        result_lines = [f"RECENT {len(docs)} EXPENSES:"]
+        for d in docs:
+            cat = d.get("category", "?")
+            amt = float(d.get("amount", 0.0))
+            cmts = d.get("comments", "")
+            uid = d.get("uid", "?")
+            user = d.get("user_name", "?")
+            date = d.get("date", "?")
+            result_lines.append(f"UID {uid} | {date} | {cat} | ${amt:.2f} | {cmts} (by {user})")
+            
+        return "\n".join(result_lines)
+        
+    except Exception as e:
+        logger.error(f"Failed to get recent expenses: {e}", exc_info=True)
+        return f"ERROR: Failed to retrieve from database: {str(e)}"
