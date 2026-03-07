@@ -11,6 +11,7 @@ from db import (
     tool_delete_expense, 
     tool_get_summary,
     tool_get_recent_expenses,
+    tool_convert_currency,
     ALLOWED_CATEGORIES
 )
 
@@ -32,10 +33,11 @@ interpreter = Agent(
         f"Today's date is {datetime.now().strftime('%m/%d/%Y')}.",
         "1. Read the user's input and extract the intent (Add, Modify, Delete, Summary, List, or General Chat).",
         "2. Extract the relevant entities: amount, comments, category, date, UID (if modifying/deleting), limit (if listing).",
-        "3. YOU MUST ALSO EXTRACT the `telegram_id` and `user_name` provided in the SYSTEM INFO.",
+        "3. YOU MUST ALSO EXTRACT the `telegram_id` and `user_name` provided in the SYSTEM INFO. If the user asks to log/modify/list 'for their partner', intelligently swap `telegram_id` to the correct Partner ID provided in SYSTEM INFO.",
         f"4. Ensure the category strictly matches one of: {', '.join(ALLOWED_CATEGORIES)}.",
         "5. If the request is a Summary, calculate the `start_date` and `end_date` in YYYY-MM-DD format based on their request. If unspecified, default to the last 14 days.",
-        "6. Pass ALL of this highly structured data to the Database Manager to execute."
+        "6. If the request contains a foreign currency (e.g. Won, KRW, USD), extract the foreign amount and currency code. Instruct the Database Manager to convert it to SGD BEFORE saving it. Use the converted SGD amount.",
+        "7. Pass ALL of this highly structured data to the Database Manager to execute."
     ]
 ) if model else None
 
@@ -46,13 +48,14 @@ db_manager = Agent(
     name="DatabaseManager",
     role="Safely execute database transactions.",
     model=model,
-    tools=[tool_add_expense, tool_modify_expense, tool_delete_expense, tool_get_summary, tool_get_recent_expenses],
+    tools=[tool_add_expense, tool_modify_expense, tool_delete_expense, tool_get_summary, tool_get_recent_expenses, tool_convert_currency],
     instructions=[
         "You receive structured intent from the Interpreter.",
-        "Select the correct tool (add, modify, delete, get_summary, get_recent_expenses) and execute it.",
+        "Select the correct tool (add, modify, delete, get_summary, get_recent_expenses, convert_currency) and execute it.",
         "CRITICAL: Always pass the user's exact telegram_id to the tools.",
         "CRITICAL: UID must be an integer (int64).",
-        "CRITICAL: Amount must be a float (double)."
+        "CRITICAL: Amount must be a float (double).",
+        "CRITICAL: If asked to fetch recent expenses (list), you MUST output the elements EXACTLY in the chronological order returned by the tool (UID ascending). DO NOT REVERSE IT."
     ]
 ) if model else None
 

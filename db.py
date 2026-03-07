@@ -1,5 +1,7 @@
 import logging
 from datetime import datetime
+import json
+import urllib.request
 from google.cloud import firestore
 from pydantic import BaseModel, Field
 
@@ -71,6 +73,10 @@ class GetSummarySchema(BaseModel):
 class GetRecentExpensesSchema(BaseModel):
     telegram_id: int = Field(description="The user's Telegram ID (int64).")
     limit: int = Field(default=10, description="The number of recent expenses to retrieve (default 10).")
+
+class ConvertCurrencySchema(BaseModel):
+    amount: float = Field(description="The numerical amount in the foreign currency.")
+    source_currency: str = Field(description="The 3-letter currency code (e.g. KRW, USD).")
 
 # ==========================================
 # 2. FIRESTORE TOOLS
@@ -280,3 +286,26 @@ def tool_get_recent_expenses(data: GetRecentExpensesSchema) -> str:
     except Exception as e:
         logger.error(f"Failed to get recent expenses: {e}", exc_info=True)
         return f"ERROR: Failed to retrieve from database: {str(e)}"
+
+def tool_convert_currency(data: ConvertCurrencySchema) -> str:
+    """Converts a foreign currency amount to SGD using the latest exchange rates."""
+    try:
+        url = "https://open.er-api.com/v6/latest/SGD"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            res_data = json.loads(response.read().decode())
+        
+        rates = res_data.get("rates", {})
+        code = data.source_currency.upper()
+        if code not in rates:
+            return f"ERROR: Currency code {code} not supported or found."
+            
+        rate = rates[code]
+        # Since base is SGD, the rate given is 1 SGD = X Foreign.
+        # So to get SGD from Foreign, we divide: Foreign / Rate
+        sgd_amount = data.amount / rate
+        
+        return f"SUCCESS: {data.amount} {code} converted to {sgd_amount:.2f} SGD. (Rate: 1 SGD = {rate} {code})"
+    except Exception as e:
+        logger.error(f"Failed to fetch exchange rates: {e}", exc_info=True)
+        return f"ERROR: Failed to convert currency: {str(e)}"
