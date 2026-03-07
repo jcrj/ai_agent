@@ -1,0 +1,12 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+venv/
+.venv/
+.env
+.env.local
+secrets.json
+*.md
+.dockerignore
+Dockerfile
