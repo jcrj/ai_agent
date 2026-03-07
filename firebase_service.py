@@ -6,14 +6,14 @@ from typing import Any, Dict, List, Optional
 
 from google.cloud.firestore_v1 import FieldFilter
 
-from config import EXPENSES_COLLECTION, db
+from config import EXPENSES_COLLECTION, get_db
 from models import Expense
 
 
 def get_next_uid() -> int:
     """Return the next available UID by finding the current max and incrementing."""
     docs = (
-        db.collection(EXPENSES_COLLECTION)
+        get_db().collection(EXPENSES_COLLECTION)
         .order_by("uid", direction="DESCENDING")
         .limit(1)
         .get()
@@ -28,7 +28,7 @@ def add_expense(expense: Expense) -> str:
     Add a new expense document to Firestore.
     Returns the auto-generated document ID.
     """
-    doc_ref = db.collection(EXPENSES_COLLECTION).add(expense.model_dump())
+    doc_ref = get_db().collection(EXPENSES_COLLECTION).add(expense.model_dump())
     # .add() returns a tuple (timestamp, doc_ref)
     return doc_ref[1].id
 
@@ -39,7 +39,7 @@ def delete_expense(uid: int, telegram_id: int) -> bool:
     Returns True if a document was deleted, False otherwise.
     """
     docs = (
-        db.collection(EXPENSES_COLLECTION)
+        get_db().collection(EXPENSES_COLLECTION)
         .where(filter=FieldFilter("uid", "==", uid))
         .where(filter=FieldFilter("telegram_id", "==", telegram_id))
         .limit(1)
@@ -58,7 +58,7 @@ def modify_expense(uid: int, telegram_id: int, updates: Dict[str, Any]) -> bool:
     Returns True if a document was updated, False otherwise.
     """
     docs = (
-        db.collection(EXPENSES_COLLECTION)
+        get_db().collection(EXPENSES_COLLECTION)
         .where(filter=FieldFilter("uid", "==", uid))
         .where(filter=FieldFilter("telegram_id", "==", telegram_id))
         .limit(1)
@@ -75,7 +75,7 @@ def get_expenses_by_user(telegram_id: int, limit: int = 20) -> List[Dict[str, An
     Return the most recent expenses for a given user, ordered by uid descending.
     """
     docs = (
-        db.collection(EXPENSES_COLLECTION)
+        get_db().collection(EXPENSES_COLLECTION)
         .where(filter=FieldFilter("telegram_id", "==", telegram_id))
         .order_by("uid", direction="DESCENDING")
         .limit(limit)
@@ -98,7 +98,7 @@ def get_spending_summary(
     Aggregate spending for a user, optionally filtered by month/year.
     Returns a dict with category_totals, grand_total, and expense_count.
     """
-    query = db.collection(EXPENSES_COLLECTION).where(
+    query = get_db().collection(EXPENSES_COLLECTION).where(
         filter=FieldFilter("telegram_id", "==", telegram_id)
     )
     docs = query.get()
