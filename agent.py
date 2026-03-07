@@ -23,7 +23,6 @@ expense_agent = Agent(
         "If an operation errors, explain what went wrong and ask the user to clarify."
     ],
     tools=[add_expense, modify_expense, delete_expense],
-    show_tool_calls=True,
     markdown=True,
 ) if model else None
 
@@ -42,6 +41,5 @@ router_agent = Agent(
         "Do not apologize excessively. Always be ready to assist."
     ],
     markdown=True,
-    show_tool_calls=True,
 ) if model and expense_agent else None
 
