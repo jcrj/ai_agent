@@ -25,16 +25,43 @@ ALLOWED_CATEGORIES = [
 ]
 
 
-class Expense(BaseModel):
-    uid: int
-    amount: float
-    category: str
-    comments: str
-    date: str
-    telegram_id: int
-    user_name: str
-    created_at: datetime
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional
 
+# ==========================================
+# 1. PYDANTIC MODELS (Strict Firestore Schema)
+# ==========================================
+class AddExpenseSchema(BaseModel):
+    telegram_id: int = Field(description="The user's Telegram ID (int64).")
+    user_name: str = Field(description="The user's name.")
+    date: str = Field(description="Date in MM/DD/YYYY or YYYY-MM-DD format. Default to today if omitted.")
+    category: str = Field(description=f"Must be one of: {', '.join(ALLOWED_CATEGORIES)}")
+    amount: float = Field(description="The numerical amount spent (Firestore double).")
+    comments: str = Field(description="A short string describing the expense.")
+
+    @field_validator('category')
+    @classmethod
+    def check_category(cls, value: str) -> str:
+        formatted_value = value.capitalize()
+        if formatted_value not in ALLOWED_CATEGORIES:
+            raise ValueError(f"Category '{formatted_value}' is not allowed.")
+        return formatted_value
+
+class ModifyExpenseSchema(BaseModel):
+    telegram_id: int = Field(description="The user's Telegram ID (int64).")
+    uid: int = Field(description="The unique integer ID (int64) of the expense to modify.")
+    new_date: Optional[str] = Field(default=None, description="New date string.")
+    new_category: Optional[str] = Field(default=None, description="New category string.")
+    new_amount: Optional[float] = Field(default=None, description="New numerical amount (double).")
+    new_comments: Optional[str] = Field(default=None, description="New comments string.")
+
+class DeleteExpenseSchema(BaseModel):
+    telegram_id: int = Field(description="The user's Telegram ID (int64).")
+    uid: int = Field(description="The unique integer ID (int64) of the expense to delete.")
+
+# ==========================================
+# 2. FIRESTORE TOOLS
+# ==========================================
 
 def _get_next_uid() -> int:
     """Internal helper to get the highest uid + 1."""
@@ -42,7 +69,6 @@ def _get_next_uid() -> int:
         raise Exception("Database not initialized")
 
     expenses_ref = db.collection(COLLECTION_NAME)
-    # Query for the highest uid
     query = expenses_ref.order_by("uid", direction=firestore.Query.DESCENDING).limit(1)
     results = query.stream()
 
@@ -53,139 +79,85 @@ def _get_next_uid() -> int:
     return 1
 
 
-def add_expense(
-    amount: float,
-    category: str,
-    comments: str,
-    date: str,
-    telegram_id: int,
-    user_name: str,
-) -> str:
-    """
-    Adds a new expense to the tracker.
-    
-    Args:
-        amount: The total cost of the expense (e.g. 13.2)
-        category: Must be one of: Food, Groceries, Transport, Shopping, Health, Entertainment, Travel, Bills, Gifts, Other
-        comments: Description of the expense
-        date: String format of date (e.g. 1/25/2026)
-        telegram_id: Telegram user ID adding the expense
-        user_name: Name of the user adding the expense
-    
-    Returns:
-        String confirming success and providing the UID.
-    """
+def tool_add_expense(data: AddExpenseSchema) -> str:
+    """Adds a new expense to the tracker. You MUST pass the requested parameters in the Pydantic Schema format."""
     if not db:
-        return "Error: Database not connected."
+        return "ERROR: Database not connected."
     
-    if category not in ALLOWED_CATEGORIES:
-        return f"Error: Category must be one of {', '.join(ALLOWED_CATEGORIES)}. You provided '{category}'."
-
     try:
         new_uid = _get_next_uid()
         
-        expense = Expense(
-            uid=new_uid,
-            amount=amount,
-            category=category,
-            comments=comments,
-            date=date,
-            telegram_id=telegram_id,
-            user_name=user_name,
-            created_at=datetime.utcnow(),
-        )
+        expense_doc = {
+            "amount": float(data.amount),
+            "category": data.category,
+            "comments": data.comments,
+            "created_at": firestore.SERVER_TIMESTAMP,
+            "date": data.date,
+            "telegram_id": data.telegram_id,
+            "uid": new_uid,
+            "user_name": data.user_name
+        }
         
-        doc_ref = db.collection(COLLECTION_NAME).document(str(new_uid))
-        doc_ref.set(expense.model_dump())
+        db.collection(COLLECTION_NAME).document(str(new_uid)).set(expense_doc)
         
-        return f"Successfully added expense '{comments}' for ${amount} under {category}. (Expense ID: {new_uid})"
+        return f"SUCCESS: Added {data.category} expense of ${data.amount:.2f} for '{data.comments}'. The UID is {new_uid}."
     except Exception as e:
         logger.error(f"Failed to add expense: {e}", exc_info=True)
-        return f"Failed to add expense due to a system error: {str(e)}"
+        return f"ERROR: Failed to add to database due to a system error: {str(e)}"
 
 
-def modify_expense(
-    uid: int,
-    requester_id: int,
-    amount: float | None = None,
-    category: str | None = None,
-    comments: str | None = None,
-    date: str | None = None,
-) -> str:
-    """
-    Modifies an existing expense by UID.
-    
-    Args:
-        uid: The unique ID of the expense to modify.
-        requester_id: The telegram ID of the user requesting the change.
-        amount: New amount, or None to keep existing.
-        category: New category, or None to keep existing.
-        comments: New comments, or None to keep existing.
-        date: New date string, or None to keep existing.
-        
-    Returns:
-        String describing the result of the operation.
-    """
+def tool_modify_expense(data: ModifyExpenseSchema) -> str:
+    """Modifies an existing expense by its unique UID."""
     if not db:
-        return "Error: Database not connected."
+        return "ERROR: Database not connected."
 
     try:
-        doc_ref = db.collection(COLLECTION_NAME).document(str(uid))
+        # We explicitly search by document ID, since that's how we saved it
+        doc_ref = db.collection(COLLECTION_NAME).document(str(data.uid))
         doc = doc_ref.get()
 
         if not doc.exists:
-            return f"Error: Expense ID {uid} does not exist."
+            return f"ERROR: Could not find an expense with UID {data.uid}."
 
-        current_data = doc.to_dict()
-        
-        # Security/Tracing Check: Make sure the requester is authorized
-        # (For this app, both partners can edit anything, but we log it)
-        logger.info(f"User {requester_id} is modifying Expense {uid}")
+        logger.info(f"User {data.telegram_id} is modifying Expense {data.uid}")
 
         updates = {}
-        if amount is not None:
-            updates["amount"] = amount
-        if category is not None:
-            if category not in ALLOWED_CATEGORIES:
-                return f"Error: Category must be one of {', '.join(ALLOWED_CATEGORIES)}."
-            updates["category"] = category
-        if comments is not None:
-            updates["comments"] = comments
-        if date is not None:
-            updates["date"] = date
+        if data.new_amount is not None:
+            updates["amount"] = float(data.new_amount)
+        if data.new_category is not None:
+            # Re-validate category just in case it wasn't caught
+            cat = data.new_category.capitalize()
+            if cat not in ALLOWED_CATEGORIES:
+                return f"ERROR: Category must be one of {', '.join(ALLOWED_CATEGORIES)}."
+            updates["category"] = cat
+        if data.new_comments is not None:
+            updates["comments"] = data.new_comments
+        if data.new_date is not None:
+            updates["date"] = data.new_date
 
         if not updates:
-            return f"No changes were provided for Expense ID {uid}."
+            return f"NOTICE: No changes were provided for Expense ID {data.uid}."
 
         doc_ref.update(updates)
-        return f"Successfully updated Expense ID {uid}. Changes: {updates}"
+        return f"SUCCESS: Successfully updated Expense ID {data.uid}. Changes: {updates}"
     except Exception as e:
-        logger.error(f"Failed to modify expense {uid}: {e}", exc_info=True)
-        return f"Failed to modify expense due to an error: {str(e)}"
+        logger.error(f"Failed to modify expense {data.uid}: {e}", exc_info=True)
+        return f"ERROR: Failed to modify database due to an error: {str(e)}"
 
 
-def delete_expense(uid: int, requester_id: int) -> str:
-    """
-    Deletes an expense from the tracker entirely.
-    
-    Args:
-        uid: The unique ID of the expense to delete.
-        requester_id: The telegram ID of the user requesting the deletion.
-        
-    Returns:
-        String confirming successful deletion.
-    """
+def tool_delete_expense(data: DeleteExpenseSchema) -> str:
+    """Deletes an expense from the tracker entirely by its UID."""
     if not db:
-        return "Error: Database not connected."
+        return "ERROR: Database not connected."
 
     try:
-        doc_ref = db.collection(COLLECTION_NAME).document(str(uid))
+        doc_ref = db.collection(COLLECTION_NAME).document(str(data.uid))
         if not doc_ref.get().exists:
-             return f"Error: Expense ID {uid} not found."
+             return f"ERROR: Expense ID {data.uid} not found."
 
-        logger.info(f"User {requester_id} is DELETING Expense {uid}")
+        logger.info(f"User {data.telegram_id} is DELETING Expense {data.uid}")
         doc_ref.delete()
-        return f"Successfully deleted Expense ID {uid}."
+        return f"SUCCESS: Successfully deleted Expense ID {data.uid}."
     except Exception as e:
-        logger.error(f"Failed to delete expense {uid}: {e}", exc_info=True)
-        return f"Failed to delete expense: {str(e)}"
+        logger.error(f"Failed to delete expense {data.uid}: {e}", exc_info=True)
+        return f"ERROR: Failed to delete from database: {str(e)}"

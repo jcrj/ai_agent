@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from config import settings
-from agent import router_agent
+from agent import expense_team
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ async def handle_message(update: Update, context):
         logger.warning(f"Unauthorized message from user ID: {user_id}")
         return
 
-    if not router_agent:
+    if not expense_team:
         await update.message.reply_text("My internal cognitive systems are offline (Missing Google API Key).")
         return
 
@@ -43,16 +43,14 @@ async def handle_message(update: Update, context):
         # This allows the LLM to populate the `telegram_id` and `user_name` automatically 
         # when running the `add_expense` tool!
         enriched_prompt = (
-            f"<system_context>\n"
-            f"The user speaking to you is Master {user_name}.\n"
-            f"Their unique telegram_id is {user_id}.\n"
-            f"If you need to add, modify, or delete an expense, ALWAYS use {user_id} and '{user_name}' "
-            f"for the required tool arguments.\n"
-            f"</system_context>\n\n"
+            f"SYSTEM INFO:\n"
+            f"User Name: {user_name}\n"
+            f"Telegram ID: {user_id}\n\n"
+            f"USER REQUEST:\n"
             f"{user_text}"
         )
 
-        response = await asyncio.to_thread(router_agent.run, enriched_prompt)
+        response = await asyncio.to_thread(expense_team.run, enriched_prompt)
         
         await update.message.reply_text(response.content)
     except Exception as e:
@@ -80,4 +78,5 @@ async def lifespan(app: FastAPI):
         await ptb_app.stop()
         await ptb_app.shutdown()
         logger.info("PTB application stopped and shutdown.")
+
 
