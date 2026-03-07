@@ -54,12 +54,14 @@ class AddExpenseSchema(BaseModel):
         return formatted_value
 
 class ModifyExpenseSchema(BaseModel):
-    telegram_id: int = Field(description="The user's Telegram ID (int64).")
+    telegram_id: int = Field(description="The user's Telegram ID (int64) proposing the modification.")
     uid: int = Field(description="The unique integer ID (int64) of the expense to modify.")
     new_date: Optional[str] = Field(default=None, description="New date string.")
     new_category: Optional[str] = Field(default=None, description="New category string.")
     new_amount: Optional[float] = Field(default=None, description="New numerical amount (double).")
     new_comments: Optional[str] = Field(default=None, description="New comments string.")
+    new_telegram_id: Optional[int] = Field(default=None, description="New owner's Telegram ID (to transfer expense).")
+    new_user_name: Optional[str] = Field(default=None, description="New owner's User Name (to transfer expense).")
 
 class DeleteExpenseSchema(BaseModel):
     telegram_id: int = Field(description="The user's Telegram ID (int64).")
@@ -153,6 +155,10 @@ def tool_modify_expense(data: ModifyExpenseSchema) -> str:
             updates["comments"] = data.new_comments
         if data.new_date is not None:
             updates["date"] = data.new_date
+        if data.new_telegram_id is not None:
+            updates["telegram_id"] = data.new_telegram_id
+        if data.new_user_name is not None:
+            updates["user_name"] = data.new_user_name
 
         if not updates:
             return f"NOTICE: No changes were provided for Expense ID {data.uid}."
@@ -251,21 +257,27 @@ def tool_get_summary(data: GetSummarySchema) -> str:
         return f"ERROR: Failed to calculate summary due to a database error: {str(e)}"
 
 def tool_get_recent_expenses(data: GetRecentExpensesSchema) -> str:
-    """Gets a list of the most recent expenses logged across all users, in ascending order (oldest first among the recent batch)."""
+    """Gets a list of the most recent expenses for a specific user, in ascending order."""
     if not db:
         return "ERROR: Database not connected."
     
     try:
-        # We fetch the latest N globally. Using UID descending to get the newest.
-        expenses_ref = db.collection(COLLECTION_NAME)
-        query = expenses_ref.order_by("uid", direction=firestore.Query.DESCENDING).limit(data.limit)
-        results = query.stream()
+        # Fetch all for the specific user to avoid requiring a composite index in Firestore
+        # (Firestore requires a composite index if we equality filter by one field and order by another).
+        expenses_ref = db.collection(COLLECTION_NAME).where(filter=firestore.FieldFilter("telegram_id", "==", data.telegram_id))
+        results = expenses_ref.stream()
         
-        docs = []
+        all_docs = []
         for doc in results:
-            docs.append(doc.to_dict())
+            all_docs.append(doc.to_dict())
             
-        # Reverse to ascending order (so the oldest of the recent 10 is first, the absolute newest is last)
+        # Sort in memory descending by UID to get the newest
+        all_docs.sort(key=lambda x: x.get("uid", 0), reverse=True)
+        
+        # Take the top `limit`
+        docs = all_docs[:data.limit]
+        
+        # Reverse to ascending order (oldest of the recent batch is first)
         docs.reverse()
         
         if not docs:

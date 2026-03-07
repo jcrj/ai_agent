@@ -46,8 +46,8 @@ async def handle_message(update: Update, context):
             f"SYSTEM INFO:\n"
             f"User Name: {user_name}\n"
             f"Telegram ID: {user_id}\n"
-            f"Partner 1 ID: {settings.partner_1_id}\n"
-            f"Partner 2 ID: {settings.partner_2_id}\n\n"
+            f"Partner 1 Name: {settings.partner_1_name} (ID: {settings.partner_1_id})\n"
+            f"Partner 2 Name: {settings.partner_2_name} (ID: {settings.partner_2_id})\n\n"
             f"USER REQUEST:\n"
             f"{user_text}"
         )
