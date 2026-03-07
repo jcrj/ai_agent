@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(lifespan=lifespan)
 
 
-@app.post("/")
+@app.post("/webhook")
 async def process_update(request: Request):
     """
     Handle incoming Telegram webhooks (receives updates from Telegram).
