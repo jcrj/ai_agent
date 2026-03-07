@@ -63,6 +63,11 @@ class DeleteExpenseSchema(BaseModel):
     telegram_id: int = Field(description="The user's Telegram ID (int64).")
     uid: int = Field(description="The unique integer ID (int64) of the expense to delete.")
 
+class GetSummarySchema(BaseModel):
+    telegram_id: int = Field(description="The user's Telegram ID (int64).")
+    start_date: str = Field(description="Start date in YYYY-MM-DD format.")
+    end_date: str = Field(description="End date in YYYY-MM-DD format.")
+
 # ==========================================
 # 2. FIRESTORE TOOLS
 # ==========================================
@@ -165,3 +170,72 @@ def tool_delete_expense(data: DeleteExpenseSchema) -> str:
     except Exception as e:
         logger.error(f"Failed to delete expense {data.uid}: {e}", exc_info=True)
         return f"ERROR: Failed to delete from database: {str(e)}"
+
+
+def tool_get_summary(data: GetSummarySchema) -> str:
+    """Gets a summary of expenses between two dates. Returns the aggregated data for the agent to format."""
+    if not db:
+        return "ERROR: Database not connected."
+    
+    try:
+        # Note: Since the previous code allowed arbitrary date formats (e.g. "1/25/2026") alongside "YYYY-MM-DD",
+        # the safest query is to fetch all for the user and filter in memory using Python's datetime.
+        # This prevents missed documents from string sorting mismatches.
+        expenses_ref = db.collection(COLLECTION_NAME).where(filter=firestore.FieldFilter("telegram_id", "==", data.telegram_id))
+        results = expenses_ref.stream()
+
+        start_dt = datetime.strptime(data.start_date, "%Y-%m-%d")
+        
+        # Add 23:59:59 to the end date so it is inclusive of the final day
+        end_dt_raw = datetime.strptime(data.end_date, "%Y-%m-%d")
+        end_dt = end_dt_raw.replace(hour=23, minute=59, second=59)
+
+        total_spent = 0.0
+        category_totals = {category: 0.0 for category in ALLOWED_CATEGORIES}
+        matched_count = 0
+
+        for doc in results:
+            doc_data = doc.to_dict()
+            doc_date_str = doc_data.get("date", "")
+            
+            # The date could be in various string formats because the CLI allowed anything initially,
+            # but recently we instructed the LLM to use YYYY-MM-DD or MM/DD/YYYY.
+            # We'll try common formats to parse it.
+            doc_dt = None
+            try:
+                if "-" in doc_date_str:
+                    doc_dt = datetime.strptime(doc_date_str, "%Y-%m-%d")
+                elif "/" in doc_date_str:
+                    doc_dt = datetime.strptime(doc_date_str, "%m/%d/%Y")
+            except ValueError:
+                pass # Unparseable date
+
+            if doc_dt and start_dt <= doc_dt <= end_dt:
+                amount = float(doc_data.get("amount", 0.0))
+                category = doc_data.get("category", "Other")
+
+                total_spent += amount
+                if category in category_totals:
+                    category_totals[category] += amount
+                else:
+                    category_totals["Other"] += amount
+                
+                matched_count += 1
+        
+        # Build the return string
+        result_lines = [
+            f"SUMMARY RESULTS FOR {data.start_date} to {data.end_date}",
+            f"Total Spent: ${total_spent:.2f}",
+            f"Transactions Found: {matched_count}",
+            "--- Category Breakdown ---"
+        ]
+
+        for cat, amount in category_totals.items():
+            if amount > 0:
+                result_lines.append(f"{cat}: ${amount:.2f}")
+
+        return "\n".join(result_lines)
+        
+    except Exception as e:
+        logger.error(f"Failed to get summary: {e}", exc_info=True)
+        return f"ERROR: Failed to calculate summary due to a database error: {str(e)}"
