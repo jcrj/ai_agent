@@ -1,24 +1,20 @@
 FROM python:3.12-slim
 
-# Prevent Python from buffering stdout/stderr (important for Cloud Run logs)
 ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install build dependencies needed by grpcio, cryptography, cffi, etc.
+# Install build dependencies just in case for cryptography/grpcio
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies first (layer caching)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application source
+# Copy application files (respecting .dockerignore)
 COPY . .
 
-EXPOSE 8080
-
-CMD ["python", "main.py"]
-
+# Cloud Run injects the PORT environment variable. We use uvicorn to bind to it.
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
