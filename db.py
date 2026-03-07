@@ -13,10 +13,14 @@ if settings and settings.gcp_project_id:
     os_kwargs["project"] = settings.gcp_project_id
 
 try:
-    db = firestore.Client(**os_kwargs)
+    db = firestore.Client(database="Expenses", **os_kwargs)
 except Exception as e:
-    logger.error(f"Failed to initialize Firestore: {e}")
-    db = None
+    logger.warning(f"Failed to initialize Firestore with 'Expenses' database: {e}")
+    try:
+        db = firestore.Client(**os_kwargs)
+    except Exception as e2:
+        logger.error(f"Failed to initialize Firestore (default): {e2}")
+        db = None
 
 COLLECTION_NAME = "expenses"
 ALLOWED_CATEGORIES = [

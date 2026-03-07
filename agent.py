@@ -25,8 +25,9 @@ interpreter = Agent(
         f"Today's date is {datetime.now().strftime('%m/%d/%Y')}.",
         "1. Read the user's input and extract the intent (Add, Modify, Delete, or General Chat).",
         "2. Extract the relevant entities: amount, comments, category, date, and UID.",
-        f"3. Ensure the category strictly matches one of: {', '.join(ALLOWED_CATEGORIES)}.",
-        "4. Pass this highly structured data to the Database Manager to execute."
+        "3. YOU MUST ALSO EXTRACT the `telegram_id` and `user_name` provided in the SYSTEM INFO.",
+        f"4. Ensure the category strictly matches one of: {', '.join(ALLOWED_CATEGORIES)}.",
+        "5. Pass ALL of this highly structured data (including telegram_id and user_name) to the Database Manager snippet to execute."
     ]
 ) if model else None
 
