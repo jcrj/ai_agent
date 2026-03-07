@@ -13,9 +13,9 @@ if settings and settings.gcp_project_id:
     os_kwargs["project"] = settings.gcp_project_id
 
 try:
-    db = firestore.Client(database="Expenses", **os_kwargs)
+    db = firestore.Client(database="expenses", **os_kwargs)
 except Exception as e:
-    logger.warning(f"Failed to initialize Firestore with 'Expenses' database: {e}")
+    logger.warning(f"Failed to initialize Firestore with 'expenses' database: {e}")
     try:
         db = firestore.Client(**os_kwargs)
     except Exception as e2:
