@@ -43,6 +43,7 @@ class AddExpenseSchema(BaseModel):
     category: str = Field(description=f"Must be one of: {', '.join(ALLOWED_CATEGORIES)}")
     amount: float = Field(description="The numerical amount spent (Firestore double).")
     comments: str = Field(description="A short string describing the expense.")
+    parent_category: Optional[str] = Field(default=None)
 
     @field_validator('category')
     @classmethod
@@ -112,7 +113,8 @@ def tool_add_expense(data: AddExpenseSchema) -> str:
             "date": data.date,
             "telegram_id": data.telegram_id,
             "uid": new_uid,
-            "user_name": data.user_name
+            "user_name": data.user_name,
+            "parent_category": data.parent_category,
         }
         
         db.collection(COLLECTION_NAME).document(str(new_uid)).set(expense_doc)

@@ -34,7 +34,7 @@ class InitialOutput(BaseModel):
     )
     start_date: Optional[str] = Field(
         default=None,
-        description="Start date for Summary action in YYYY-MM-DD format. If unspecified, default to 14 days ago."
+        description="Start date for Summary action in YYYY-MM-DD format. If unspecified, default to the first day of the current month."
     )
     end_date: Optional[str] = Field(
         default=None,
@@ -43,6 +43,10 @@ class InitialOutput(BaseModel):
     list_limit: Optional[int] = Field(
         default=10,
         description="Number of recent expenses to retrieve for List action. Default 10."
+    )
+    category_filter: Optional[str] = Field(
+        default=None,
+        description=f"If the user asks about a specific expense category (e.g. 'how much did I spend on food'), extract it here. Must be one of: {ALLOWED_CATEGORIES}. Leave null for full summary."
     )
 
 

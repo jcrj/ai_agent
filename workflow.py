@@ -133,6 +133,7 @@ def make_action_executor(agent, db_tool_fn):
                 category=content.category,
                 amount=content.amount,
                 comments=content.comments,
+                parent_category=content.parent_category,
             )
             result = db_tool_fn(schema)
             uid_match = re.search(r'The UID is (\d+)', result)
@@ -190,12 +191,13 @@ def delete_executor(step_input: StepInput) -> StepOutput:
 
 def summary_executor(step_input: StepInput) -> StepOutput:
     interpret: InitialOutput = step_input.get_step_content('Interpret')
-    today = _format_date(_current_sgt())
-    two_weeks_ago = _format_date(_current_sgt() - timedelta(days=14))
+    now = _current_sgt()
+    today = _format_date(now)
+    month_start = _format_date(now.replace(day=1))
 
     schema = GetSummarySchema(
         telegram_id=interpret.target_telegram_id,
-        start_date=interpret.start_date or two_weeks_ago,
+        start_date=interpret.start_date or month_start,
         end_date=interpret.end_date or today,
     )
     result = tool_get_summary(schema)
@@ -203,7 +205,21 @@ def summary_executor(step_input: StepInput) -> StepOutput:
     if 'ERROR' in result:
         return StepOutput(content=f"❌ {result}")
 
-    # Reformat the raw tool output into emoji lines
+    cat_filter = interpret.category_filter
+
+    if cat_filter:
+        # Single-category answer
+        for line in result.splitlines():
+            if line.startswith(cat_filter + ':'):
+                _, amt = line.split(':', 1)
+                emoji = CATEGORY_EMOJI.get(cat_filter, '📦')
+                header = f"{emoji} {cat_filter} for {interpret.target_user_name} ({schema.start_date} to {schema.end_date})"
+                return StepOutput(content=f"{header}\n💰 Total: {amt.strip()}")
+        # Category found but $0 spent
+        emoji = CATEGORY_EMOJI.get(cat_filter, '📦')
+        return StepOutput(content=f"{emoji} No {cat_filter} expenses for {interpret.target_user_name} between {schema.start_date} and {schema.end_date}.")
+
+    # Full summary
     lines = [f"📊 Summary for {interpret.target_user_name} ({schema.start_date} to {schema.end_date})"]
     for line in result.splitlines():
         if line.startswith('Total Spent'):
