@@ -1,4 +1,5 @@
 import re
+import time
 import logging
 import httpx
 from datetime import datetime, timezone, timedelta
@@ -36,15 +37,44 @@ if settings and settings.google_api_key:
 # ─── FX Cache ─────────────────────────────────────────────────────────────────
 
 _fx_cache: dict = {}
+_fx_cache_timestamp: float = 0.0
+_FX_CACHE_TTL_SECONDS = 6 * 60 * 60  # Refresh every 6 hours
+
+
+class FxConversionError(Exception):
+    """Raised when currency conversion fails."""
+    pass
 
 
 async def _get_sgd_rate(currency: str) -> float:
-    global _fx_cache
-    if not _fx_cache:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get('https://open.er-api.com/v6/latest/SGD')
-            _fx_cache = resp.json().get('rates', {})
-    return _fx_cache.get(currency.upper(), 1.0)
+    """Get the exchange rate from `currency` to SGD. Raises FxConversionError on failure."""
+    global _fx_cache, _fx_cache_timestamp
+
+    now = time.monotonic()
+    if not _fx_cache or (now - _fx_cache_timestamp) > _FX_CACHE_TTL_SECONDS:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get('https://open.er-api.com/v6/latest/SGD')
+                resp.raise_for_status()
+                rates = resp.json().get('rates', {})
+                if rates:
+                    _fx_cache = rates
+                    _fx_cache_timestamp = now
+                else:
+                    raise FxConversionError("FX API returned empty rates.")
+        except httpx.HTTPError as e:
+            logger.error(f"FX API request failed: {e}")
+            # If we have stale cache, use it with a warning rather than failing
+            if _fx_cache:
+                logger.warning("Using stale FX cache due to API failure.")
+            else:
+                raise FxConversionError(f"Unable to fetch exchange rates and no cached rates available: {e}")
+
+    currency_upper = currency.upper()
+    rate = _fx_cache.get(currency_upper)
+    if rate is None:
+        raise FxConversionError(f"Unknown currency code: {currency_upper}. Could not convert to SGD.")
+    return rate
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -114,7 +144,10 @@ def make_action_executor(agent, db_tool_fn):
 
         # FX conversion (Python, not LLM)
         if hasattr(content, 'currency') and content.currency != 'SGD':
-            rate = await _get_sgd_rate(content.currency)
+            try:
+                rate = await _get_sgd_rate(content.currency)
+            except FxConversionError as e:
+                return StepOutput(content=f"❌ Currency conversion failed: {e}")
             if hasattr(content, 'amount') and content.amount is not None:
                 content.amount = round(content.amount / rate, 2)
             if hasattr(content, 'new_amount') and content.new_amount is not None:
