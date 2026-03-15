@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
@@ -55,7 +54,7 @@ async def handle_message(update: Update, context):
             f"{user_text}"
         )
 
-        response = await asyncio.to_thread(workflow.run, enriched_prompt)
+        response = await workflow.arun(enriched_prompt)
         
         await update.message.reply_text(response.content)
     except Exception as e:

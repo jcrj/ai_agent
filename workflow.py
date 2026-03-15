@@ -38,11 +38,12 @@ if settings and settings.google_api_key:
 _fx_cache: dict = {}
 
 
-def _get_sgd_rate(currency: str) -> float:
+async def _get_sgd_rate(currency: str) -> float:
     global _fx_cache
     if not _fx_cache:
-        resp = httpx.get('https://open.er-api.com/v6/latest/SGD')
-        _fx_cache = resp.json().get('rates', {})
+        async with httpx.AsyncClient() as client:
+            resp = await client.get('https://open.er-api.com/v6/latest/SGD')
+            _fx_cache = resp.json().get('rates', {})
     return _fx_cache.get(currency.upper(), 1.0)
 
 
@@ -102,9 +103,9 @@ interpret_step = Step(name='Interpret', agent=interpret_agent)
 # ─── Action Executors ─────────────────────────────────────────────────────────
 
 def make_action_executor(agent, db_tool_fn):
-    def executor(step_input: StepInput) -> StepOutput:
+    async def executor(step_input: StepInput) -> StepOutput:
         interpret: InitialOutput = step_input.get_step_content('Interpret')
-        response = agent.run(interpret.init_msg)
+        response = await agent.arun(interpret.init_msg)
         content = response.content
 
         # Propagate date from Interpret
@@ -113,7 +114,7 @@ def make_action_executor(agent, db_tool_fn):
 
         # FX conversion (Python, not LLM)
         if hasattr(content, 'currency') and content.currency != 'SGD':
-            rate = _get_sgd_rate(content.currency)
+            rate = await _get_sgd_rate(content.currency)
             if hasattr(content, 'amount') and content.amount is not None:
                 content.amount = round(content.amount / rate, 2)
             if hasattr(content, 'new_amount') and content.new_amount is not None:
@@ -177,7 +178,7 @@ def make_action_executor(agent, db_tool_fn):
     return executor
 
 
-def delete_executor(step_input: StepInput) -> StepOutput:
+async def delete_executor(step_input: StepInput) -> StepOutput:
     interpret: InitialOutput = step_input.get_step_content('Interpret')
     schema = DeleteExpenseSchema(
         telegram_id=interpret.target_telegram_id,
@@ -189,7 +190,7 @@ def delete_executor(step_input: StepInput) -> StepOutput:
     return StepOutput(content=f"🗑️ Deleted: UID {interpret.uid}")
 
 
-def summary_executor(step_input: StepInput) -> StepOutput:
+async def summary_executor(step_input: StepInput) -> StepOutput:
     interpret: InitialOutput = step_input.get_step_content('Interpret')
     now = _current_sgt()
     today = _format_date(now)
@@ -234,7 +235,7 @@ def summary_executor(step_input: StepInput) -> StepOutput:
     return StepOutput(content='\n'.join(lines))
 
 
-def list_executor(step_input: StepInput) -> StepOutput:
+async def list_executor(step_input: StepInput) -> StepOutput:
     interpret: InitialOutput = step_input.get_step_content('Interpret')
     schema = GetRecentExpensesSchema(
         telegram_id=interpret.target_telegram_id,
@@ -258,9 +259,9 @@ def list_executor(step_input: StepInput) -> StepOutput:
     return StepOutput(content='\n'.join(lines))
 
 
-def chat_executor(step_input: StepInput) -> StepOutput:
+async def chat_executor(step_input: StepInput) -> StepOutput:
     interpret: InitialOutput = step_input.get_step_content('Interpret')
-    response = chat_agent.run(interpret.init_msg)
+    response = await chat_agent.arun(interpret.init_msg)
     return StepOutput(content=response.content)
 
 
