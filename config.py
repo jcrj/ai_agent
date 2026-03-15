@@ -1,6 +1,25 @@
 import logging
 from pydantic_settings import BaseSettings
 
+ACTIONS = [
+    'Add Expense',
+    'Modify Expense',
+    'Delete Expense',
+    'Summary',
+    'List',
+    'General Chat',
+]
+
+PARENT_CATEGORIES = ['Travel/Vacation']
+
+SYSTEM_PROMPT = """
+You are a helpful personal butler, your goal is to help the user with their expenses.
+Your users are from Singapore, please assume their expenditure are in SGD unless otherwise specified.
+There will be some terms that are native to Singapore/SEA regions, such as Grab or Gojek which you should categorize as Transport.
+For currency: only extract a non-SGD currency code if it is explicitly stated (e.g. USD 50, JPY 3000, ¥3000, €20). Ambiguous terms like "dollars" or "$" default to SGD.
+CRITICAL: NEVER print a Telegram ID number to the user. Always refer to people by their name.
+"""
+
 logger = logging.getLogger(__name__)
 
 class Settings(BaseSettings):

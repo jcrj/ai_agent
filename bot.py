@@ -1,13 +1,14 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from config import settings
-from agent import expense_team
+from workflow import workflow
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ async def handle_message(update: Update, context):
         logger.warning(f"Unauthorized message from user ID: {user_id}")
         return
 
-    if not expense_team:
+    if not workflow:
         await update.message.reply_text("My internal cognitive systems are offline (Missing Google API Key).")
         return
 
@@ -42,8 +43,10 @@ async def handle_message(update: Update, context):
         # Inject context directly into the prompt so the agent knows who is talking and what their ID is.
         # This allows the LLM to populate the `telegram_id` and `user_name` automatically 
         # when running the `add_expense` tool, and spoof IDs for partner requests!
+        current_sgt = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
         enriched_prompt = (
             f"SYSTEM INFO:\n"
+            f"Current Time (SGT): {current_sgt}\n"
             f"User Name: {user_name}\n"
             f"Telegram ID: {user_id}\n"
             f"Partner 1 Name: {settings.partner_1_name} (ID: {settings.partner_1_id})\n"
@@ -52,7 +55,7 @@ async def handle_message(update: Update, context):
             f"{user_text}"
         )
 
-        response = await asyncio.to_thread(expense_team.run, enriched_prompt)
+        response = await asyncio.to_thread(workflow.run, enriched_prompt)
         
         await update.message.reply_text(response.content)
     except Exception as e:
