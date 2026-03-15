@@ -170,7 +170,16 @@ def make_action_executor(agent, db_tool_fn):
             result = await db_tool_fn(schema)
 
             label = ACTION_EMOJI[action]
-            lines = [f"{label}: UID {interpret.uid}", f"📅 {date_str}"]
+            lines = [f"{label}: UID {interpret.uid}"]
+            if content.new_amount is not None:
+                cat = content.new_category or ''
+                cat_label = _category_label(cat, content.parent_category) if cat else ''
+                amount_line = f"💰 {cat_label} ${content.new_amount:.2f}".strip()
+                lines.append(amount_line)
+            elif content.new_category is not None:
+                lines.append(f"🏷️ {_category_label(content.new_category, content.parent_category)}")
+            if content.new_date:
+                lines.append(f"📅 {content.new_date}")
             if content.new_comments:
                 lines.append(f"📝 {content.new_comments}")
 
