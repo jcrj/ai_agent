@@ -136,7 +136,7 @@ def make_action_executor(agent, db_tool_fn):
                 comments=content.comments,
                 parent_category=content.parent_category,
             )
-            result = db_tool_fn(schema)
+            result = await db_tool_fn(schema)
             uid_match = re.search(r'The UID is (\d+)', result)
             uid_str = f" (UID {uid_match.group(1)})" if uid_match else ""
 
@@ -164,7 +164,7 @@ def make_action_executor(agent, db_tool_fn):
                 uid=interpret.uid,
                 **updates,
             )
-            result = db_tool_fn(schema)
+            result = await db_tool_fn(schema)
 
             label = ACTION_EMOJI[action]
             lines = [f"{label}: UID {interpret.uid}", f"📅 {date_str}"]
@@ -184,7 +184,7 @@ async def delete_executor(step_input: StepInput) -> StepOutput:
         telegram_id=interpret.target_telegram_id,
         uid=interpret.uid,
     )
-    result = tool_delete_expense(schema)
+    result = await tool_delete_expense(schema)
     if 'ERROR' in result:
         return StepOutput(content=f"❌ {result}")
     return StepOutput(content=f"🗑️ Deleted: UID {interpret.uid}")
@@ -201,7 +201,7 @@ async def summary_executor(step_input: StepInput) -> StepOutput:
         start_date=interpret.start_date or month_start,
         end_date=interpret.end_date or today,
     )
-    result = tool_get_summary(schema)
+    result = await tool_get_summary(schema)
 
     if 'ERROR' in result:
         return StepOutput(content=f"❌ {result}")
@@ -241,7 +241,7 @@ async def list_executor(step_input: StepInput) -> StepOutput:
         telegram_id=interpret.target_telegram_id,
         limit=interpret.list_limit or 10,
     )
-    result = tool_get_recent_expenses(schema)
+    result = await tool_get_recent_expenses(schema)
 
     if 'ERROR' in result:
         return StepOutput(content=f"❌ {result}")
