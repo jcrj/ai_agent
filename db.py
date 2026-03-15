@@ -62,6 +62,7 @@ class ModifyExpenseSchema(BaseModel):
     new_comments: Optional[str] = Field(default=None, description="New comments string.")
     new_telegram_id: Optional[int] = Field(default=None, description="New owner's Telegram ID (to transfer expense).")
     new_user_name: Optional[str] = Field(default=None, description="New owner's User Name (to transfer expense).")
+    parent_category: Optional[str] = Field(default=None)
 
 
 class DeleteExpenseSchema(BaseModel):
@@ -155,6 +156,8 @@ async def tool_modify_expense(data: ModifyExpenseSchema) -> str:
             updates["telegram_id"] = data.new_telegram_id
         if data.new_user_name is not None:
             updates["user_name"] = data.new_user_name
+        if data.parent_category is not None:
+            updates["parent_category"] = data.parent_category
 
         if not updates:
             return f"NOTICE: No changes were provided for Expense ID {data.uid}."

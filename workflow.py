@@ -122,11 +122,11 @@ def make_action_executor(agent, db_tool_fn):
             content.parent_category = PARENT_CATEGORIES[0]
             content.currency = 'SGD'
 
-        date_str = _format_date(content.date) if content.date else _format_date(interpret.date)
         action = interpret.action
 
         # Build and call the DB schema
         if action == 'Add Expense':
+            date_str = _format_date(content.date or interpret.date)
             schema = AddExpenseSchema(
                 telegram_id=interpret.target_telegram_id,
                 user_name=interpret.target_user_name,
@@ -149,6 +149,7 @@ def make_action_executor(agent, db_tool_fn):
             ]
 
         else:  # Modify Expense
+            date_str = content.new_date or _format_date(interpret.date)
             updates = {}
             if content.new_amount is not None:
                 updates['new_amount'] = content.new_amount
@@ -158,6 +159,8 @@ def make_action_executor(agent, db_tool_fn):
                 updates['new_comments'] = content.new_comments
             if content.new_date is not None:
                 updates['new_date'] = content.new_date
+            if content.parent_category is not None:
+                updates['parent_category'] = content.parent_category
 
             schema = ModifyExpenseSchema(
                 telegram_id=interpret.target_telegram_id,
