@@ -85,40 +85,45 @@ class GetRecentExpensesSchema(BaseModel):
 # 2. FIRESTORE TOOLS (async)
 # ==========================================
 
-async def _get_next_uid() -> int:
-    """Internal helper to get the highest uid + 1."""
-    if not db:
-        raise Exception("Database not initialized")
-
-    query = db.collection(COLLECTION_NAME).order_by("uid", direction=firestore.Query.DESCENDING).limit(1)
-    async for doc in query.stream():
+async def _get_next_uid_transactional(transaction, collection_ref) -> int:
+    """Get the highest uid + 1 inside a Firestore transaction to prevent race conditions."""
+    query = collection_ref.order_by("uid", direction=firestore.Query.DESCENDING).limit(1)
+    async for doc in query.stream(transaction=transaction):
         data = doc.to_dict()
         return data.get("uid", 0) + 1
-
     return 1
 
 
 async def tool_add_expense(data: AddExpenseSchema) -> str:
-    """Adds a new expense to the tracker."""
+    """Adds a new expense to the tracker using a Firestore transaction to prevent UID collisions."""
     if not db:
         return "ERROR: Database not connected."
 
     try:
-        new_uid = await _get_next_uid()
+        collection_ref = db.collection(COLLECTION_NAME)
 
-        expense_doc = {
-            "amount": float(data.amount),
-            "category": data.category,
-            "comments": data.comments,
-            "created_at": firestore.SERVER_TIMESTAMP,
-            "date": data.date,
-            "telegram_id": data.telegram_id,
-            "uid": new_uid,
-            "user_name": data.user_name,
-            "parent_category": data.parent_category,
-        }
+        @firestore.async_transactional
+        async def _add_in_transaction(transaction):
+            new_uid = await _get_next_uid_transactional(transaction, collection_ref)
 
-        await db.collection(COLLECTION_NAME).document(str(new_uid)).set(expense_doc)
+            expense_doc = {
+                "amount": float(data.amount),
+                "category": data.category,
+                "comments": data.comments,
+                "created_at": firestore.SERVER_TIMESTAMP,
+                "date": data.date,
+                "telegram_id": data.telegram_id,
+                "uid": new_uid,
+                "user_name": data.user_name,
+                "parent_category": data.parent_category,
+            }
+
+            doc_ref = collection_ref.document(str(new_uid))
+            transaction.set(doc_ref, expense_doc)
+            return new_uid
+
+        transaction = db.transaction()
+        new_uid = await _add_in_transaction(transaction)
 
         return f"SUCCESS: Added {data.category} expense of ${data.amount:.2f} for '{data.comments}'. The UID is {new_uid}."
     except Exception as e:
@@ -137,6 +142,13 @@ async def tool_modify_expense(data: ModifyExpenseSchema) -> str:
 
         if not doc.exists:
             return f"ERROR: Could not find an expense with UID {data.uid}."
+
+        # Ownership check: only the expense owner (or their partner) can modify
+        doc_data = doc.to_dict()
+        doc_owner = doc_data.get("telegram_id")
+        if doc_owner != data.telegram_id:
+            logger.warning(f"User {data.telegram_id} attempted to modify Expense {data.uid} owned by {doc_owner}")
+            return f"ERROR: You do not have permission to modify Expense ID {data.uid}."
 
         logger.info(f"User {data.telegram_id} is modifying Expense {data.uid}")
 
@@ -180,6 +192,13 @@ async def tool_delete_expense(data: DeleteExpenseSchema) -> str:
         if not doc.exists:
             return f"ERROR: Expense ID {data.uid} not found."
 
+        # Ownership check: only the expense owner can delete
+        doc_data = doc.to_dict()
+        doc_owner = doc_data.get("telegram_id")
+        if doc_owner != data.telegram_id:
+            logger.warning(f"User {data.telegram_id} attempted to delete Expense {data.uid} owned by {doc_owner}")
+            return f"ERROR: You do not have permission to delete Expense ID {data.uid}."
+
         logger.info(f"User {data.telegram_id} is DELETING Expense {data.uid}")
         await doc_ref.delete()
         return f"SUCCESS: Successfully deleted Expense ID {data.uid}."
@@ -205,18 +224,25 @@ async def tool_get_summary(data: GetSummarySchema) -> str:
         category_totals = {category: 0.0 for category in ALLOWED_CATEGORIES}
         matched_count = 0
 
+        skipped_count = 0
         async for doc in expenses_ref.stream():
             doc_data = doc.to_dict()
             doc_date_str = doc_data.get("date", "")
 
             doc_dt = None
-            try:
-                if "-" in doc_date_str:
-                    doc_dt = datetime.strptime(doc_date_str, "%Y-%m-%d")
-                elif "/" in doc_date_str:
-                    doc_dt = datetime.strptime(doc_date_str, "%m/%d/%Y")
-            except ValueError:
-                pass
+            if doc_date_str:
+                for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
+                    try:
+                        doc_dt = datetime.strptime(doc_date_str, fmt)
+                        break
+                    except ValueError:
+                        continue
+                if doc_dt is None:
+                    skipped_count += 1
+                    logger.warning(f"Skipping expense UID {doc_data.get('uid', '?')}: unparseable date '{doc_date_str}'")
+            else:
+                skipped_count += 1
+                logger.warning(f"Skipping expense UID {doc_data.get('uid', '?')}: missing date field")
 
             if doc_dt and start_dt <= doc_dt <= end_dt:
                 amount = float(doc_data.get("amount", 0.0))
@@ -237,6 +263,9 @@ async def tool_get_summary(data: GetSummarySchema) -> str:
         for cat, amount in category_totals.items():
             if amount > 0:
                 result_lines.append(f"{cat}: ${amount:.2f}")
+
+        if skipped_count > 0:
+            result_lines.append(f"WARNING: {skipped_count} expense(s) had unparseable or missing dates and were excluded.")
 
         return "\n".join(result_lines)
 
