@@ -85,6 +85,20 @@ class GetRecentExpensesSchema(BaseModel):
 # 2. FIRESTORE TOOLS (async)
 # ==========================================
 
+async def _find_doc_by_uid(uid: int):
+    """Find an expense document by its uid field value.
+
+    Handles both old docs (auto-generated IDs) and new docs (UID as doc ID)
+    by querying the uid field directly.
+    """
+    query = db.collection(COLLECTION_NAME).where(
+        filter=firestore.FieldFilter("uid", "==", uid)
+    ).limit(1)
+    async for doc in query.stream():
+        return doc.reference, doc.to_dict()
+    return None, None
+
+
 async def _get_next_uid_transactional(transaction, collection_ref) -> int:
     """Get the highest uid + 1 inside a Firestore transaction to prevent race conditions."""
     query = collection_ref.order_by("uid", direction=firestore.Query.DESCENDING).limit(1)
@@ -137,14 +151,12 @@ async def tool_modify_expense(data: ModifyExpenseSchema) -> str:
         return "ERROR: Database not connected."
 
     try:
-        doc_ref = db.collection(COLLECTION_NAME).document(str(data.uid))
-        doc = await doc_ref.get()
+        doc_ref, doc_data = await _find_doc_by_uid(data.uid)
 
-        if not doc.exists:
+        if not doc_ref:
             return f"ERROR: Could not find an expense with UID {data.uid}."
 
         # Ownership check: only the expense owner (or their partner) can modify
-        doc_data = doc.to_dict()
         doc_owner = doc_data.get("telegram_id")
         if doc_owner != data.telegram_id:
             logger.warning(f"User {data.telegram_id} attempted to modify Expense {data.uid} owned by {doc_owner}")
@@ -187,13 +199,11 @@ async def tool_delete_expense(data: DeleteExpenseSchema) -> str:
         return "ERROR: Database not connected."
 
     try:
-        doc_ref = db.collection(COLLECTION_NAME).document(str(data.uid))
-        doc = await doc_ref.get()
-        if not doc.exists:
+        doc_ref, doc_data = await _find_doc_by_uid(data.uid)
+        if not doc_ref:
             return f"ERROR: Expense ID {data.uid} not found."
 
         # Ownership check: only the expense owner can delete
-        doc_data = doc.to_dict()
         doc_owner = doc_data.get("telegram_id")
         if doc_owner != data.telegram_id:
             logger.warning(f"User {data.telegram_id} attempted to delete Expense {data.uid} owned by {doc_owner}")
