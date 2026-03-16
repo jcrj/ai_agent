@@ -217,11 +217,63 @@ async def tool_delete_expense(data: DeleteExpenseSchema) -> str:
         return f"ERROR: Failed to delete from database: {str(e)}"
 
 
+async def _aggregate_summary(docs_iter, data) -> str:
+    """Aggregate expense documents into a summary string."""
+    total_spent = 0.0
+    category_totals = {category: 0.0 for category in ALLOWED_CATEGORIES}
+    matched_count = 0
+
+    async for doc in docs_iter:
+        doc_data = doc.to_dict()
+        amount = float(doc_data.get("amount", 0.0))
+        category = doc_data.get("category", "Other")
+        total_spent += amount
+        if category in category_totals:
+            category_totals[category] += amount
+        else:
+            category_totals["Other"] += amount
+        matched_count += 1
+
+    result_lines = [
+        f"SUMMARY RESULTS FOR {data.start_date} to {data.end_date}",
+        f"Total Spent: ${total_spent:.2f}",
+        f"Transactions Found: {matched_count}",
+        "--- Category Breakdown ---",
+    ]
+    for cat, amount in category_totals.items():
+        if amount > 0:
+            result_lines.append(f"{cat}: ${amount:.2f}")
+
+    return "\n".join(result_lines)
+
+
 async def tool_get_summary(data: GetSummarySchema) -> str:
-    """Gets a summary of expenses between two dates."""
+    """Gets a summary of expenses between two dates using server-side filtering."""
     if not db:
         return "ERROR: Database not connected."
 
+    try:
+        # Server-side filtering: dates are normalized to YYYY-MM-DD so lexicographic comparison works
+        query = db.collection(COLLECTION_NAME).where(
+            filter=firestore.FieldFilter("telegram_id", "==", data.telegram_id)
+        ).where(
+            filter=firestore.FieldFilter("date", ">=", data.start_date)
+        ).where(
+            filter=firestore.FieldFilter("date", "<=", data.end_date)
+        )
+        return await _aggregate_summary(query.stream(), data)
+    except Exception as e:
+        # Composite index may not exist yet — Firestore error includes a URL to create it
+        if "index" in str(e).lower():
+            logger.warning(f"Composite index needed for server-side date filtering. "
+                           f"Create it via the link in the error, falling back to client-side: {e}")
+            return await _tool_get_summary_fallback(data)
+        logger.error(f"Failed to get summary: {e}", exc_info=True)
+        return f"ERROR: Failed to calculate summary due to a database error: {str(e)}"
+
+
+async def _tool_get_summary_fallback(data: GetSummarySchema) -> str:
+    """Client-side fallback when composite index is not available."""
     try:
         expenses_ref = db.collection(COLLECTION_NAME).where(
             filter=firestore.FieldFilter("telegram_id", "==", data.telegram_id)
@@ -234,27 +286,17 @@ async def tool_get_summary(data: GetSummarySchema) -> str:
         category_totals = {category: 0.0 for category in ALLOWED_CATEGORIES}
         matched_count = 0
 
-        skipped_count = 0
         async for doc in expenses_ref.stream():
             doc_data = doc.to_dict()
             doc_date_str = doc_data.get("date", "")
+            if not doc_date_str:
+                continue
+            try:
+                doc_dt = datetime.strptime(doc_date_str, "%Y-%m-%d")
+            except ValueError:
+                continue
 
-            doc_dt = None
-            if doc_date_str:
-                for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
-                    try:
-                        doc_dt = datetime.strptime(doc_date_str, fmt)
-                        break
-                    except ValueError:
-                        continue
-                if doc_dt is None:
-                    skipped_count += 1
-                    logger.warning(f"Skipping expense UID {doc_data.get('uid', '?')}: unparseable date '{doc_date_str}'")
-            else:
-                skipped_count += 1
-                logger.warning(f"Skipping expense UID {doc_data.get('uid', '?')}: missing date field")
-
-            if doc_dt and start_dt <= doc_dt <= end_dt:
+            if start_dt <= doc_dt <= end_dt:
                 amount = float(doc_data.get("amount", 0.0))
                 category = doc_data.get("category", "Other")
                 total_spent += amount
@@ -274,14 +316,28 @@ async def tool_get_summary(data: GetSummarySchema) -> str:
             if amount > 0:
                 result_lines.append(f"{cat}: ${amount:.2f}")
 
-        if skipped_count > 0:
-            result_lines.append(f"WARNING: {skipped_count} expense(s) had unparseable or missing dates and were excluded.")
-
         return "\n".join(result_lines)
-
     except Exception as e:
-        logger.error(f"Failed to get summary: {e}", exc_info=True)
+        logger.error(f"Failed to get summary (fallback): {e}", exc_info=True)
         return f"ERROR: Failed to calculate summary due to a database error: {str(e)}"
+
+
+def _format_expense_lines(docs: list) -> str:
+    """Format a list of expense dicts into the standard output string."""
+    if not docs:
+        return "No expenses found."
+
+    result_lines = [f"RECENT {len(docs)} EXPENSES:"]
+    for d in docs:
+        cat = d.get("category", "?")
+        amt = float(d.get("amount", 0.0))
+        cmts = d.get("comments", "")
+        uid = d.get("uid", "?")
+        user = d.get("user_name", "?")
+        date = d.get("date", "?")
+        result_lines.append(f"UID {uid} | {date} | {cat} | ${amt:.2f} | {cmts} (by {user})")
+
+    return "\n".join(result_lines)
 
 
 async def tool_get_recent_expenses(data: GetRecentExpensesSchema) -> str:
@@ -289,6 +345,30 @@ async def tool_get_recent_expenses(data: GetRecentExpensesSchema) -> str:
     if not db:
         return "ERROR: Database not connected."
 
+    try:
+        # Server-side: order by uid descending with limit (requires composite index)
+        query = db.collection(COLLECTION_NAME).where(
+            filter=firestore.FieldFilter("telegram_id", "==", data.telegram_id)
+        ).order_by("uid", direction=firestore.Query.DESCENDING).limit(data.limit)
+
+        docs = []
+        async for doc in query.stream():
+            docs.append(doc.to_dict())
+
+        # Reverse to ascending order for display
+        docs.reverse()
+        return _format_expense_lines(docs)
+
+    except Exception as e:
+        if "index" in str(e).lower():
+            logger.warning(f"Composite index needed for server-side ordering, falling back to client-side: {e}")
+            return await _tool_get_recent_fallback(data)
+        logger.error(f"Failed to get recent expenses: {e}", exc_info=True)
+        return f"ERROR: Failed to retrieve from database: {str(e)}"
+
+
+async def _tool_get_recent_fallback(data: GetRecentExpensesSchema) -> str:
+    """Client-side fallback when composite index is not available."""
     try:
         expenses_ref = db.collection(COLLECTION_NAME).where(
             filter=firestore.FieldFilter("telegram_id", "==", data.telegram_id)
@@ -301,21 +381,8 @@ async def tool_get_recent_expenses(data: GetRecentExpensesSchema) -> str:
         all_docs.sort(key=lambda x: x.get("uid", 0), reverse=True)
         docs = list(reversed(all_docs[:data.limit]))
 
-        if not docs:
-            return "No expenses found."
-
-        result_lines = [f"RECENT {len(docs)} EXPENSES:"]
-        for d in docs:
-            cat = d.get("category", "?")
-            amt = float(d.get("amount", 0.0))
-            cmts = d.get("comments", "")
-            uid = d.get("uid", "?")
-            user = d.get("user_name", "?")
-            date = d.get("date", "?")
-            result_lines.append(f"UID {uid} | {date} | {cat} | ${amt:.2f} | {cmts} (by {user})")
-
-        return "\n".join(result_lines)
+        return _format_expense_lines(docs)
 
     except Exception as e:
-        logger.error(f"Failed to get recent expenses: {e}", exc_info=True)
+        logger.error(f"Failed to get recent expenses (fallback): {e}", exc_info=True)
         return f"ERROR: Failed to retrieve from database: {str(e)}"
