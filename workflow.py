@@ -79,12 +79,90 @@ async def _get_sgd_rate(currency: str) -> float:
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
+_SGT = timezone(timedelta(hours=8))
+
+
 def _current_sgt() -> datetime:
-    return datetime.now(timezone(timedelta(hours=8)))
+    return datetime.now(_SGT)
 
 
 def _format_date(dt: datetime) -> str:
     return dt.strftime('%Y-%m-%d')
+
+
+# ─── Python-based relative date resolver ─────────────────────────────────────
+
+_DAY_NAMES = {
+    'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+    'friday': 4, 'saturday': 5, 'sunday': 6,
+    'mon': 0, 'tue': 1, 'tues': 1, 'wed': 2, 'thu': 3, 'thurs': 3,
+    'fri': 4, 'sat': 5, 'sun': 6,
+}
+
+
+def _resolve_relative_date(reference: str | None, now: datetime) -> datetime | None:
+    """
+    Parse common relative date references in Python instead of relying on the LLM.
+    Returns a datetime if successfully parsed, None otherwise.
+    """
+    if not reference:
+        return None
+
+    ref = reference.strip().lower()
+
+    # "today"
+    if ref == 'today':
+        return now
+
+    # "yesterday"
+    if ref == 'yesterday':
+        return now - timedelta(days=1)
+
+    # "N days ago"
+    m = re.match(r'(\d+)\s+days?\s+ago', ref)
+    if m:
+        return now - timedelta(days=int(m.group(1)))
+
+    # "last [day]" or "on [day]" or just "[day]"
+    cleaned = re.sub(r'^(last|on|this past)\s+', '', ref)
+    if cleaned in _DAY_NAMES:
+        target_weekday = _DAY_NAMES[cleaned]
+        current_weekday = now.weekday()
+        days_back = (current_weekday - target_weekday) % 7
+        if days_back == 0:
+            days_back = 7  # "on saturday" when today is saturday means last saturday
+        return now - timedelta(days=days_back)
+
+    # "N weeks ago"
+    m = re.match(r'(\d+)\s+weeks?\s+ago', ref)
+    if m:
+        return now - timedelta(weeks=int(m.group(1)))
+
+    return None
+
+
+def _validate_and_fix_date(llm_date: datetime, date_reference: str | None, now: datetime) -> datetime:
+    """
+    Validate the LLM-extracted date. If it's unreasonable, try Python-based parsing.
+    Falls back to the LLM date if Python can't parse either.
+    """
+    # Try Python-based resolution first if we have a reference
+    python_date = _resolve_relative_date(date_reference, now)
+    if python_date is not None:
+        # Python calculation is more trustworthy than LLM date math
+        logger.info(f"Using Python-resolved date {_format_date(python_date)} for reference '{date_reference}' (LLM said {_format_date(llm_date)})")
+        return python_date
+
+    # Sanity check: if LLM date is more than 1 year away from now, it's likely wrong
+    # Normalize both to naive for comparison to avoid tz mismatch
+    llm_naive = llm_date.replace(tzinfo=None) if llm_date.tzinfo else llm_date
+    now_naive = now.replace(tzinfo=None) if now.tzinfo else now
+    delta = abs((llm_naive - now_naive).days)
+    if delta > 365:
+        logger.warning(f"LLM date {_format_date(llm_date)} is {delta} days from now, defaulting to today")
+        return now
+
+    return llm_date
 
 
 ACTION_EMOJI = {
@@ -135,6 +213,11 @@ interpret_step = Step(name='Interpret', agent=interpret_agent)
 def make_action_executor(agent, db_tool_fn):
     async def executor(step_input: StepInput) -> StepOutput:
         interpret: InitialOutput = step_input.get_step_content('Interpret')
+
+        # Validate and fix the date from Interpret using Python-based parsing
+        now = _current_sgt()
+        interpret.date = _validate_and_fix_date(interpret.date, getattr(interpret, 'date_reference', None), now)
+
         response = await agent.arun(interpret.init_msg)
         content = response.content
 
@@ -265,18 +348,23 @@ async def summary_executor(step_input: StepInput) -> StepOutput:
         emoji = CATEGORY_EMOJI.get(cat_filter, '📦')
         return StepOutput(content=f"{emoji} No {cat_filter} expenses for {interpret.target_user_name} between {schema.start_date} and {schema.end_date}.")
 
-    # Full summary
+    # Full summary — only parse known category lines
     lines = [f"📊 Summary for {interpret.target_user_name} ({schema.start_date} to {schema.end_date})"]
+    warning_lines = []
     for line in result.splitlines():
         if line.startswith('Total Spent'):
             lines.append(f"💰 {line}")
         elif line.startswith('Transactions'):
             lines.append(f"🔢 {line}")
+        elif line.startswith('WARNING'):
+            warning_lines.append(f"⚠️ {line}")
         elif ':' in line and not line.startswith('---') and not line.startswith('SUMMARY'):
-            cat, amt = line.split(':', 1)
-            emoji = CATEGORY_EMOJI.get(cat.strip(), '📦')
-            lines.append(f"{emoji} {line.strip()}")
+            cat = line.split(':', 1)[0].strip()
+            if cat in CATEGORY_EMOJI:
+                emoji = CATEGORY_EMOJI[cat]
+                lines.append(f"{emoji} {line.strip()}")
 
+    lines.extend(warning_lines)
     return StepOutput(content='\n'.join(lines))
 
 
@@ -297,7 +385,7 @@ async def list_executor(step_input: StepInput) -> StepOutput:
         if len(parts) >= 5:
             uid, date, cat, amt, comments = parts[0], parts[1], parts[2], parts[3], parts[4]
             emoji = CATEGORY_EMOJI.get(cat.strip(), '📦')
-            lines.append(f"{i}. [{uid.strip()}] {emoji} {cat.strip()}: {amt.strip()} — {comments.strip()}")
+            lines.append(f"{i}. [{uid.strip()}] 📅 {date.strip()} {emoji} {cat.strip()}: {amt.strip()} — {comments.strip()}")
         else:
             lines.append(f"{i}. {line.strip()}")
 

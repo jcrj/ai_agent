@@ -16,6 +16,10 @@ class InitialOutput(BaseModel):
     date: datetime = Field(
         description="The date of the expense or request. If the user specifies a relative time (e.g. '2 days ago', 'yesterday'), calculate it relative to the 'Current Time (SGT)' provided in SYSTEM INFO. If no time is specified, default to today. Return in ISO 8601 format."
     )
+    date_reference: Optional[str] = Field(
+        default=None,
+        description="The raw date/time reference from the user's message, if any. Examples: 'yesterday', '2 days ago', 'on saturday', 'last week', 'march 5'. Leave null if no date is mentioned."
+    )
     telegram_id: int = Field(
         description="The Telegram ID of the user sending the message. Extract from the SYSTEM INFO block."
     )
