@@ -24,7 +24,7 @@ from db import (
     tool_get_summary,
     tool_get_recent_expenses,
 )
-from models import InitialOutput, AddExpense, ModifyExpense
+from models import InitialOutput
 
 logger = logging.getLogger(__name__)
 
@@ -196,119 +196,126 @@ def _category_label(category: str, parent_category: str | None) -> str:
 
 
 # ─── Agents ───────────────────────────────────────────────────────────────────
+# Single interpret agent handles classification AND field extraction in one call.
+# Chat agent uses a minimal prompt since it only needs conversational ability.
+
+_CHAT_PROMPT = "You are a helpful personal butler. Be concise and friendly. CRITICAL: NEVER print a Telegram ID number to the user. Always refer to people by their name."
 
 _base = dict(model=model, description=SYSTEM_PROMPT) if model else {}
 
 interpret_agent = Agent(**_base, output_schema=InitialOutput) if model else None
-add_expense_agent = Agent(**_base, output_schema=AddExpense) if model else None
-modify_expense_agent = Agent(**_base, output_schema=ModifyExpense) if model else None
-chat_agent = Agent(**_base) if model else None
+chat_agent = Agent(model=model, description=_CHAT_PROMPT) if model else None
 
 # ─── Interpret Step ───────────────────────────────────────────────────────────
 
 interpret_step = Step(name='Interpret', agent=interpret_agent)
 
-# ─── Action Executors ─────────────────────────────────────────────────────────
+# ─── Action Executors (no second LLM call) ───────────────────────────────────
 
-def make_action_executor(agent, db_tool_fn):
-    async def executor(step_input: StepInput) -> StepOutput:
-        interpret: InitialOutput = step_input.get_step_content('Interpret')
 
-        # Validate and fix the date from Interpret using Python-based parsing
-        now = _current_sgt()
-        interpret.date = _validate_and_fix_date(interpret.date, getattr(interpret, 'date_reference', None), now)
+async def add_expense_executor(step_input: StepInput) -> StepOutput:
+    interpret: InitialOutput = step_input.get_step_content('Interpret')
 
-        response = await agent.arun(interpret.init_msg)
-        content = response.content
+    now = _current_sgt()
+    interpret.date = _validate_and_fix_date(interpret.date, interpret.date_reference, now)
 
-        # Propagate date from Interpret
-        if hasattr(content, 'date') and content.date is None:
-            content.date = interpret.date
+    # FX conversion (Python, not LLM)
+    if interpret.currency != 'SGD':
+        try:
+            rate = await _get_sgd_rate(interpret.currency)
+        except FxConversionError as e:
+            return StepOutput(content=f"❌ Currency conversion failed: {e}")
+        if interpret.amount is not None:
+            interpret.amount = round(interpret.amount / rate, 2)
+        interpret.parent_category = PARENT_CATEGORIES[0]
+        interpret.currency = 'SGD'
 
-        # FX conversion (Python, not LLM)
-        if hasattr(content, 'currency') and content.currency != 'SGD':
-            try:
-                rate = await _get_sgd_rate(content.currency)
-            except FxConversionError as e:
-                return StepOutput(content=f"❌ Currency conversion failed: {e}")
-            if hasattr(content, 'amount') and content.amount is not None:
-                content.amount = round(content.amount / rate, 2)
-            if hasattr(content, 'new_amount') and content.new_amount is not None:
-                content.new_amount = round(content.new_amount / rate, 2)
-            content.parent_category = PARENT_CATEGORIES[0]
-            content.currency = 'SGD'
+    date_str = _format_date(interpret.date)
+    schema = AddExpenseSchema(
+        telegram_id=interpret.target_telegram_id,
+        user_name=interpret.target_user_name,
+        date=date_str,
+        category=interpret.category,
+        amount=interpret.amount,
+        comments=interpret.comments,
+        parent_category=interpret.parent_category,
+    )
+    result = await tool_add_expense(schema)
 
-        action = interpret.action
+    if 'ERROR' in result:
+        return StepOutput(content=f"❌ {result}")
 
-        # Build and call the DB schema
-        if action == 'Add Expense':
-            date_str = _format_date(content.date or interpret.date)
-            schema = AddExpenseSchema(
-                telegram_id=interpret.target_telegram_id,
-                user_name=interpret.target_user_name,
-                date=date_str,
-                category=content.category,
-                amount=content.amount,
-                comments=content.comments,
-                parent_category=content.parent_category,
-            )
-            result = await db_tool_fn(schema)
-            uid_match = re.search(r'The UID is (\d+)', result)
-            uid_str = f" (UID {uid_match.group(1)})" if uid_match else ""
+    uid_match = re.search(r'The UID is (\d+)', result)
+    uid_str = f" (UID {uid_match.group(1)})" if uid_match else ""
 
-            label = ACTION_EMOJI[action]
-            cat_label = _category_label(content.category, content.parent_category)
-            lines = [
-                f"{label}: {cat_label} ${content.amount:.2f}",
-                f"📅 {date_str}",
-                f"📝 {content.comments}{uid_str}",
-            ]
+    label = ACTION_EMOJI['Add Expense']
+    cat_label = _category_label(interpret.category, interpret.parent_category)
+    lines = [
+        f"{label}: {cat_label} ${interpret.amount:.2f}",
+        f"📅 {date_str}",
+        f"📝 {interpret.comments}{uid_str}",
+    ]
+    return StepOutput(content='\n'.join(lines))
 
-        else:  # Modify Expense
-            # If user specified a relative date reference (e.g. "last saturday"),
-            # use the Python-resolved date from interpret instead of the LLM's new_date
-            if getattr(interpret, 'date_reference', None):
-                content.new_date = _format_date(interpret.date)
 
-            date_str = content.new_date or _format_date(interpret.date)
-            updates = {}
-            if content.new_amount is not None:
-                updates['new_amount'] = content.new_amount
-            if content.new_category is not None:
-                updates['new_category'] = content.new_category
-            if content.new_comments is not None:
-                updates['new_comments'] = content.new_comments
-            if content.new_date is not None:
-                updates['new_date'] = content.new_date
-            if content.parent_category is not None:
-                updates['parent_category'] = content.parent_category
+async def modify_expense_executor(step_input: StepInput) -> StepOutput:
+    interpret: InitialOutput = step_input.get_step_content('Interpret')
 
-            schema = ModifyExpenseSchema(
-                telegram_id=interpret.target_telegram_id,
-                uid=interpret.uid,
-                **updates,
-            )
-            result = await db_tool_fn(schema)
+    now = _current_sgt()
+    interpret.date = _validate_and_fix_date(interpret.date, interpret.date_reference, now)
 
-            label = ACTION_EMOJI[action]
-            lines = [f"{label}: UID {interpret.uid}"]
-            if content.new_amount is not None:
-                cat = content.new_category or ''
-                cat_label = _category_label(cat, content.parent_category) if cat else ''
-                amount_line = f"💰 {cat_label} ${content.new_amount:.2f}".strip()
-                lines.append(amount_line)
-            elif content.new_category is not None:
-                lines.append(f"🏷️ {_category_label(content.new_category, content.parent_category)}")
-            if content.new_date:
-                lines.append(f"📅 {content.new_date}")
-            if content.new_comments:
-                lines.append(f"📝 {content.new_comments}")
+    # FX conversion (Python, not LLM)
+    if interpret.currency != 'SGD':
+        try:
+            rate = await _get_sgd_rate(interpret.currency)
+        except FxConversionError as e:
+            return StepOutput(content=f"❌ Currency conversion failed: {e}")
+        if interpret.new_amount is not None:
+            interpret.new_amount = round(interpret.new_amount / rate, 2)
+        interpret.parent_category = PARENT_CATEGORIES[0]
+        interpret.currency = 'SGD'
 
-        if 'ERROR' in result:
-            return StepOutput(content=f"❌ {result}")
+    # If user specified a relative date reference, use Python-resolved date
+    if interpret.date_reference:
+        interpret.new_date = _format_date(interpret.date)
 
-        return StepOutput(content='\n'.join(lines))
-    return executor
+    updates = {}
+    if interpret.new_amount is not None:
+        updates['new_amount'] = interpret.new_amount
+    if interpret.new_category is not None:
+        updates['new_category'] = interpret.new_category
+    if interpret.new_comments is not None:
+        updates['new_comments'] = interpret.new_comments
+    if interpret.new_date is not None:
+        updates['new_date'] = interpret.new_date
+    if interpret.parent_category is not None:
+        updates['parent_category'] = interpret.parent_category
+
+    schema = ModifyExpenseSchema(
+        telegram_id=interpret.target_telegram_id,
+        uid=interpret.uid,
+        **updates,
+    )
+    result = await tool_modify_expense(schema)
+
+    if 'ERROR' in result:
+        return StepOutput(content=f"❌ {result}")
+
+    label = ACTION_EMOJI['Modify Expense']
+    lines = [f"{label}: UID {interpret.uid}"]
+    if interpret.new_amount is not None:
+        cat = interpret.new_category or ''
+        cat_label = _category_label(cat, interpret.parent_category) if cat else ''
+        amount_line = f"💰 {cat_label} ${interpret.new_amount:.2f}".strip()
+        lines.append(amount_line)
+    elif interpret.new_category is not None:
+        lines.append(f"🏷️ {_category_label(interpret.new_category, interpret.parent_category)}")
+    if interpret.new_date:
+        lines.append(f"📅 {interpret.new_date}")
+    if interpret.new_comments:
+        lines.append(f"📝 {interpret.new_comments}")
+
+    return StepOutput(content='\n'.join(lines))
 
 
 async def delete_executor(step_input: StepInput) -> StepOutput:
@@ -398,21 +405,15 @@ async def list_executor(step_input: StepInput) -> StepOutput:
 
 
 async def chat_executor(step_input: StepInput) -> StepOutput:
-    interpret: InitialOutput = step_input.get_step_content('Interpret')
-    response = await chat_agent.arun(interpret.init_msg)
+    # Pass the original enriched prompt directly — no second LLM call wasted re-reading it
+    response = await chat_agent.arun(step_input.input)
     return StepOutput(content=response.content)
 
 
 # ─── Steps ────────────────────────────────────────────────────────────────────
 
-add_expense_step = Step(
-    name='Add Expense',
-    executor=make_action_executor(add_expense_agent, tool_add_expense),
-)
-modify_expense_step = Step(
-    name='Modify Expense',
-    executor=make_action_executor(modify_expense_agent, tool_modify_expense),
-)
+add_expense_step = Step(name='Add Expense', executor=add_expense_executor)
+modify_expense_step = Step(name='Modify Expense', executor=modify_expense_executor)
 delete_expense_step = Step(name='Delete Expense', executor=delete_executor)
 summary_step = Step(name='Summary', executor=summary_executor)
 list_step = Step(name='List', executor=list_executor)
