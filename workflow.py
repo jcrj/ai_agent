@@ -265,6 +265,11 @@ def make_action_executor(agent, db_tool_fn):
             ]
 
         else:  # Modify Expense
+            # If user specified a relative date reference (e.g. "last saturday"),
+            # use the Python-resolved date from interpret instead of the LLM's new_date
+            if getattr(interpret, 'date_reference', None):
+                content.new_date = _format_date(interpret.date)
+
             date_str = content.new_date or _format_date(interpret.date)
             updates = {}
             if content.new_amount is not None:
