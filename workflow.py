@@ -38,7 +38,7 @@ if settings and settings.google_api_key:
 
 _fx_cache: dict = {}
 _fx_cache_timestamp: float = 0.0
-_FX_CACHE_TTL_SECONDS = 6 * 60 * 60  # Refresh every 6 hours
+_FX_CACHE_TTL_SECONDS = 24 * 60 * 60  # Refresh every 24 hours
 
 
 class FxConversionError(Exception):
