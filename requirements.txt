@@ -1,7 +1,6 @@
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.1
-python-telegram-bot[webhooks]>=22.6
-agno>=2.5.7
+agno[telegram]>=2.6.5
 google-genai>=0.5.0
 pydantic>=2.7.0
 pydantic-settings>=2.2.0

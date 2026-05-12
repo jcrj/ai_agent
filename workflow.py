@@ -9,7 +9,6 @@ from agno.models.google import Gemini
 from agno.workflow.router import Router
 from agno.workflow.step import Step
 from agno.workflow.types import StepInput, StepOutput
-from agno.workflow.workflow import Workflow
 
 from config import settings, SYSTEM_PROMPT, PARENT_CATEGORIES
 from db import (
@@ -440,9 +439,5 @@ router = Router(
     ],
 )
 
-# ─── Workflow ─────────────────────────────────────────────────────────────────
-
-workflow = Workflow(
-    name='Expense Tracker',
-    steps=[interpret_step, router],
-) if model else None
+# ─── Workflow components are exported as module-level symbols ─────────────────
+# interpret_step and router are consumed by main.py to build the EnrichedWorkflow
