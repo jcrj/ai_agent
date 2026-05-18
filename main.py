@@ -23,11 +23,10 @@ from agno.workflow.workflow import Workflow
 
 
 class EnrichedWorkflow(Workflow):
-    async def arun(self, input=None, *, user_id=None, **kwargs):
+    def arun(self, input=None, *, user_id=None, **kwargs):
         if input and isinstance(input, str) and settings:
-            enriched = self._enrich(input, user_id)
-            return await super().arun(enriched, user_id=user_id, **kwargs)
-        return await super().arun(input, user_id=user_id, **kwargs)
+            input = self._enrich(input, user_id)
+        return super().arun(input, user_id=user_id, **kwargs)
 
     @staticmethod
     def _enrich(text: str, user_id_str: str | None) -> str:

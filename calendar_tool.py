@@ -3,7 +3,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 
-import caldav
+try:
+    import caldav
+except ImportError:
+    caldav = None
 
 from config import settings
 
@@ -19,7 +22,9 @@ _last_listed: dict[int, list[tuple[str, str]]] = {}
 
 # ─── Sync CalDAV helpers (wrapped by asyncio.to_thread) ───────────────────────
 
-def _get_client(user_id: int) -> caldav.DAVClient | None:
+def _get_client(user_id: int):
+    if caldav is None:
+        return None
     creds = settings.get_icloud_credentials(user_id) if settings else None
     if not creds:
         return None
