@@ -87,7 +87,7 @@ if enriched_workflow and settings and settings.telegram_token:
         telegram_interface = Telegram(
             workflow=enriched_workflow,
             token=settings.telegram_token,
-            streaming=False,
+            streaming=True,
         )
 
         agent_os = AgentOS(
