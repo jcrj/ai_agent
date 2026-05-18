@@ -5,11 +5,9 @@ import httpx
 from datetime import datetime, timezone, timedelta
 
 from agno.agent import Agent
-from agno.models.google import Gemini
 from agno.workflow.router import Router
 from agno.workflow.step import Step
 from agno.workflow.types import StepInput, StepOutput
-from agno.workflow.workflow import Workflow
 
 from config import settings, SYSTEM_PROMPT, PARENT_CATEGORIES
 from db import (
@@ -29,10 +27,20 @@ from models import InitialOutput
 logger = logging.getLogger(__name__)
 
 # ─── Model ────────────────────────────────────────────────────────────────────
+# Conditional import based on configured provider — only the active provider's
+# SDK needs to be installed. Switch via MODEL_PROVIDER env var.
 
 model = None
-if settings and settings.google_api_key:
-    model = Gemini(id=settings.model_id, api_key=settings.google_api_key)
+if settings:
+    provider = settings.model_provider.lower()
+    if provider == "deepseek" and settings.deepseek_api_key:
+        from agno.models.deepseek import DeepSeek
+        model = DeepSeek(id=settings.model_id, api_key=settings.deepseek_api_key)
+    elif provider == "gemini" and settings.google_api_key:
+        from agno.models.google import Gemini
+        model = Gemini(id=settings.model_id, api_key=settings.google_api_key)
+    else:
+        logger.error(f"No API key found for model_provider='{provider}'. Set DEEPSEEK_API_KEY or GOOGLE_API_KEY.")
 
 # ─── FX Cache ─────────────────────────────────────────────────────────────────
 
@@ -440,9 +448,5 @@ router = Router(
     ],
 )
 
-# ─── Workflow ─────────────────────────────────────────────────────────────────
-
-workflow = Workflow(
-    name='Expense Tracker',
-    steps=[interpret_step, router],
-) if model else None
+# ─── Workflow components are exported as module-level symbols ─────────────────
+# interpret_step and router are consumed by main.py to build the EnrichedWorkflow

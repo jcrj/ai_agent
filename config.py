@@ -28,10 +28,12 @@ class Settings(BaseSettings):
     partner_2_id: int
     partner_1_name: str
     partner_2_name: str
-    google_api_key: str
+    google_api_key: str | None = None
+    deepseek_api_key: str | None = None
     gcp_project_id: str | None = None
     port: int = 8080
-    model_id: str = "gemini-3.1-flash-lite-preview"
+    model_provider: str = "deepseek"  # "deepseek" or "gemini"
+    model_id: str = "deepseek-v4-pro"
 
     def get_name_for_id(self, user_id: int) -> str | None:
         if user_id == self.partner_1_id:
