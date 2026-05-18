@@ -7,3 +7,4 @@ pydantic>=2.7.0
 pydantic-settings>=2.2.0
 google-cloud-firestore>=2.15.0
 httpx
+caldav>=1.4.0

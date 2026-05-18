@@ -23,6 +23,12 @@ from db import (
     tool_get_recent_expenses,
 )
 from models import InitialOutput
+from calendar_tool import (
+    list_events as cal_list_events,
+    add_event as cal_add_event,
+    modify_event as cal_modify_event,
+    delete_event as cal_delete_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -418,6 +424,60 @@ async def chat_executor(step_input: StepInput) -> StepOutput:
     return StepOutput(content=response.content)
 
 
+# ─── Calendar Executors ──────────────────────────────────────────────────────
+
+
+async def list_events_executor(step_input: StepInput) -> StepOutput:
+    interpret: InitialOutput = step_input.get_step_content('Interpret')
+    days = interpret.list_days_ahead or 7
+    result = await cal_list_events(
+        user_id=interpret.target_telegram_id,
+        user_name=interpret.target_user_name,
+        days_ahead=days,
+    )
+    return StepOutput(content=result)
+
+
+async def add_event_executor(step_input: StepInput) -> StepOutput:
+    interpret: InitialOutput = step_input.get_step_content('Interpret')
+    if not interpret.event_title or not interpret.event_start_iso:
+        return StepOutput(content="❌ Need both an event title and start time to add an event.")
+    result = await cal_add_event(
+        user_id=interpret.target_telegram_id,
+        title=interpret.event_title,
+        start_iso=interpret.event_start_iso,
+        end_iso=interpret.event_end_iso,
+        location=interpret.event_location,
+        description=interpret.event_description,
+    )
+    return StepOutput(content=result)
+
+
+async def modify_event_executor(step_input: StepInput) -> StepOutput:
+    interpret: InitialOutput = step_input.get_step_content('Interpret')
+    result = await cal_modify_event(
+        user_id=interpret.target_telegram_id,
+        match_reference=interpret.event_match_reference,
+        index=interpret.event_index,
+        new_title=interpret.new_event_title,
+        new_start_iso=interpret.new_event_start_iso,
+        new_end_iso=interpret.new_event_end_iso,
+        new_location=interpret.new_event_location,
+        new_description=interpret.new_event_description,
+    )
+    return StepOutput(content=result)
+
+
+async def delete_event_executor(step_input: StepInput) -> StepOutput:
+    interpret: InitialOutput = step_input.get_step_content('Interpret')
+    result = await cal_delete_event(
+        user_id=interpret.target_telegram_id,
+        match_reference=interpret.event_match_reference,
+        index=interpret.event_index,
+    )
+    return StepOutput(content=result)
+
+
 # ─── Steps ────────────────────────────────────────────────────────────────────
 
 add_expense_step = Step(name='Add Expense', executor=add_expense_executor)
@@ -425,6 +485,10 @@ modify_expense_step = Step(name='Modify Expense', executor=modify_expense_execut
 delete_expense_step = Step(name='Delete Expense', executor=delete_executor)
 summary_step = Step(name='Summary', executor=summary_executor)
 list_step = Step(name='List', executor=list_executor)
+list_events_step = Step(name='List Events', executor=list_events_executor)
+add_event_step = Step(name='Add Event', executor=add_event_executor)
+modify_event_step = Step(name='Modify Event', executor=modify_event_executor)
+delete_event_step = Step(name='Delete Event', executor=delete_event_executor)
 chat_step = Step(name='General Chat', executor=chat_executor)
 
 # ─── Router ───────────────────────────────────────────────────────────────────
@@ -444,6 +508,10 @@ router = Router(
         delete_expense_step,
         summary_step,
         list_step,
+        list_events_step,
+        add_event_step,
+        modify_event_step,
+        delete_event_step,
         chat_step,
     ],
 )

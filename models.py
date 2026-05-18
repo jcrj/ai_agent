@@ -86,3 +86,57 @@ class InitialOutput(BaseModel):
         default=None,
         description="New date in YYYY-MM-DD format. Only for Modify Expense."
     )
+
+    # ── Calendar Event fields (Add/Modify/Delete/List Events) ──
+    event_title: Optional[str] = Field(
+        default=None,
+        description="Title/summary of the event. Required for Add Event."
+    )
+    event_start_iso: Optional[str] = Field(
+        default=None,
+        description="Event start datetime in ISO 8601 format (YYYY-MM-DDTHH:MM:SS), assumed SGT. Required for Add Event."
+    )
+    event_end_iso: Optional[str] = Field(
+        default=None,
+        description="Event end datetime in ISO 8601 format (YYYY-MM-DDTHH:MM:SS), assumed SGT. If omitted for Add Event, defaults to 1 hour after start."
+    )
+    event_location: Optional[str] = Field(
+        default=None,
+        description="Event location (e.g. 'Marina Bay Sands'). Optional for Add/Modify Event."
+    )
+    event_description: Optional[str] = Field(
+        default=None,
+        description="Event description/notes. Optional for Add/Modify Event."
+    )
+    event_match_reference: Optional[str] = Field(
+        default=None,
+        description="Descriptive reference to find the event for Modify/Delete (e.g. 'dentist appointment', 'lunch with John'). Use the most distinctive words from the user's message."
+    )
+    event_index: Optional[int] = Field(
+        default=None,
+        description="1-based numeric index from the most recently listed events. Only set if the user explicitly says a number like 'delete event 3' or 'cancel the second one'."
+    )
+    new_event_title: Optional[str] = Field(
+        default=None,
+        description="New title. Only for Modify Event."
+    )
+    new_event_start_iso: Optional[str] = Field(
+        default=None,
+        description="New start datetime in ISO 8601 (SGT). Only for Modify Event."
+    )
+    new_event_end_iso: Optional[str] = Field(
+        default=None,
+        description="New end datetime in ISO 8601 (SGT). Only for Modify Event."
+    )
+    new_event_location: Optional[str] = Field(
+        default=None,
+        description="New location. Only for Modify Event."
+    )
+    new_event_description: Optional[str] = Field(
+        default=None,
+        description="New description. Only for Modify Event."
+    )
+    list_days_ahead: Optional[int] = Field(
+        default=7,
+        description="Number of days ahead to list events for 'List Events' action. Default 7."
+    )
