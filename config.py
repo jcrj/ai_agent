@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     partner_1_icloud_pass: str | None = None
     partner_2_icloud_user: str | None = None
     partner_2_icloud_pass: str | None = None
+    partner_1_calendar_name: str | None = None
+    partner_2_calendar_name: str | None = None
 
     def get_name_for_id(self, user_id: int) -> str | None:
         if user_id == self.partner_1_id:
@@ -62,6 +64,13 @@ class Settings(BaseSettings):
             return (self.partner_1_icloud_user, self.partner_1_icloud_pass)
         if user_id == self.partner_2_id and self.partner_2_icloud_user and self.partner_2_icloud_pass:
             return (self.partner_2_icloud_user, self.partner_2_icloud_pass)
+        return None
+
+    def get_calendar_name(self, user_id: int) -> str | None:
+        if user_id == self.partner_1_id:
+            return self.partner_1_calendar_name
+        if user_id == self.partner_2_id:
+            return self.partner_2_calendar_name
         return None
 
     class Config:

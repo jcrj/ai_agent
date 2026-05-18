@@ -2,7 +2,6 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
-from typing import Optional
 
 import caldav
 
@@ -14,8 +13,8 @@ ICLOUD_CALDAV_URL = "https://caldav.icloud.com/"
 _SGT = timezone(timedelta(hours=8))
 
 # In-memory cache of last-listed events per user, for index-based modify/delete.
-# Maps user_id -> list of event UIDs in display order.
-_last_listed: dict[int, list[str]] = {}
+# Maps user_id -> list of (calendar_url, event_uid) in display order.
+_last_listed: dict[int, list[tuple[str, str]]] = {}
 
 
 # ─── Sync CalDAV helpers (wrapped by asyncio.to_thread) ───────────────────────
@@ -28,15 +27,37 @@ def _get_client(user_id: int) -> caldav.DAVClient | None:
     return caldav.DAVClient(url=ICLOUD_CALDAV_URL, username=username, password=password)
 
 
-def _get_default_calendar(client: caldav.DAVClient):
+def _get_all_calendars(client: caldav.DAVClient) -> list:
     principal = client.principal()
     calendars = principal.calendars()
     if not calendars:
         raise RuntimeError("No calendars found for this iCloud account.")
+    return calendars
+
+
+def _find_calendar_by_name(calendars: list, name: str):
+    name_lower = name.lower()
+    for cal in calendars:
+        if cal.name and cal.name.lower() == name_lower:
+            return cal
+    for cal in calendars:
+        if cal.name and name_lower in cal.name.lower():
+            return cal
+    return None
+
+
+def _get_write_calendar(client: caldav.DAVClient, user_id: int):
+    calendars = _get_all_calendars(client)
+    cal_name = settings.get_calendar_name(user_id) if settings else None
+    if cal_name:
+        found = _find_calendar_by_name(calendars, cal_name)
+        if found:
+            return found
+        logger.warning(f"Calendar '{cal_name}' not found, falling back to first calendar")
     return calendars[0]
 
 
-def _extract_event_data(event) -> dict:
+def _extract_event_data(event, calendar_name: str | None = None) -> dict:
     vevent = event.vobject_instance.vevent
     start = vevent.dtstart.value if hasattr(vevent, 'dtstart') else None
     end = vevent.dtend.value if hasattr(vevent, 'dtend') else None
@@ -50,6 +71,7 @@ def _extract_event_data(event) -> dict:
         'location': vevent.location.value if hasattr(vevent, 'location') else None,
         'description': vevent.description.value if hasattr(vevent, 'description') else None,
         'all_day': all_day,
+        'calendar_name': calendar_name,
     }
 
 
@@ -58,6 +80,7 @@ def _format_event_line(idx: int, data: dict) -> str:
     start = data.get('start')
     end = data.get('end')
     location = data.get('location')
+    cal_name = data.get('calendar_name')
 
     if data.get('all_day'):
         time_str = f"{start.strftime('%Y-%m-%d')} (all day)" if start else "?"
@@ -69,6 +92,8 @@ def _format_event_line(idx: int, data: dict) -> str:
         time_str = "?"
 
     line = f"{idx}. 📅 {time_str} — {summary}"
+    if cal_name:
+        line += f" [{cal_name}]"
     if location:
         line += f" (📍 {location})"
     return line
@@ -88,79 +113,96 @@ def _list_events_sync(user_id: int, days_ahead: int) -> tuple[list[dict], str | 
     if not client:
         return [], "Calendar not configured for this user. Set the iCloud credentials environment variables."
     try:
-        cal = _get_default_calendar(client)
+        calendars = _get_all_calendars(client)
         now = datetime.now(_SGT)
         end = now + timedelta(days=days_ahead)
-        events = cal.search(start=now, end=end, event=True, expand=True)
-        data = [_extract_event_data(e) for e in events]
-        data.sort(key=lambda x: x.get('start') if isinstance(x.get('start'), datetime) else datetime.max.replace(tzinfo=_SGT))
-        return data, None
+
+        all_events = []
+        for cal in calendars:
+            try:
+                events = cal.search(start=now, end=end, event=True, expand=True)
+                for e in events:
+                    all_events.append(_extract_event_data(e, calendar_name=cal.name))
+            except Exception as cal_err:
+                logger.warning(f"Failed to read calendar '{cal.name}': {cal_err}")
+
+        all_events.sort(key=lambda x: x.get('start') if isinstance(x.get('start'), datetime) else datetime.max.replace(tzinfo=_SGT))
+        return all_events, None
     except Exception as e:
         logger.error(f"CalDAV list failed: {e}", exc_info=True)
         return [], f"Failed to fetch calendar: {e}"
 
 
-def _find_event_sync(user_id: int, match_text: str, days_back: int = 7, days_forward: int = 30):
-    client = _get_client(user_id)
-    if not client:
-        return None, None, "Calendar not configured for this user."
-    try:
-        cal = _get_default_calendar(client)
-        now = datetime.now(_SGT)
-        events = cal.search(start=now - timedelta(days=days_back), end=now + timedelta(days=days_forward), event=True, expand=True)
+def _find_event_across_calendars(client: caldav.DAVClient, match_text: str,
+                                  days_back: int = 7, days_forward: int = 30):
+    """Search all calendars for the best fuzzy match."""
+    calendars = _get_all_calendars(client)
+    now = datetime.now(_SGT)
+    start = now - timedelta(days=days_back)
+    end = now + timedelta(days=days_forward)
 
-        best_ratio = 0.0
-        best_event = None
-        best_data = None
-        match_lower = match_text.lower()
+    best_ratio = 0.0
+    best_event = None
+    best_data = None
+    match_lower = match_text.lower()
 
-        for event in events:
-            data = _extract_event_data(event)
-            summary = (data.get('summary') or '').lower()
-            ratio = SequenceMatcher(None, match_lower, summary).ratio()
-            if match_lower in summary:
-                ratio = max(ratio, 0.85)
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_event = event
-                best_data = data
+    for cal in calendars:
+        try:
+            events = cal.search(start=start, end=end, event=True, expand=True)
+            for event in events:
+                data = _extract_event_data(event, calendar_name=cal.name)
+                summary = (data.get('summary') or '').lower()
+                ratio = SequenceMatcher(None, match_lower, summary).ratio()
+                if match_lower in summary:
+                    ratio = max(ratio, 0.85)
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_event = event
+                    best_data = data
+        except Exception as cal_err:
+            logger.warning(f"Failed to search calendar '{cal.name}': {cal_err}")
 
-        if best_ratio < 0.4:
-            return None, None, None
-        return best_event, best_data, None
-    except Exception as e:
-        logger.error(f"CalDAV find failed: {e}", exc_info=True)
-        return None, None, f"Failed to search calendar: {e}"
+    if best_ratio < 0.4:
+        return None, None
+    return best_event, best_data
 
 
-def _get_event_by_uid_sync(user_id: int, uid: str):
-    client = _get_client(user_id)
-    if not client:
-        return None, None, "Calendar not configured for this user."
-    try:
-        cal = _get_default_calendar(client)
-        event = cal.event_by_uid(uid)
-        return event, _extract_event_data(event), None
-    except Exception as e:
-        logger.error(f"CalDAV event_by_uid failed: {e}", exc_info=True)
-        return None, None, f"Failed to find event: {e}"
+def _get_event_by_uid_across_calendars(client: caldav.DAVClient, uid: str):
+    """Search all calendars for an event by UID."""
+    calendars = _get_all_calendars(client)
+    for cal in calendars:
+        try:
+            event = cal.event_by_uid(uid)
+            return event, _extract_event_data(event, calendar_name=cal.name)
+        except Exception:
+            continue
+    return None, None
 
 
 def _resolve_event_sync(user_id: int, match_reference: str | None, index: int | None):
     """Try fuzzy match first, then fall back to index from last listed events."""
-    if match_reference:
-        event, data, error = _find_event_sync(user_id, match_reference)
-        if error:
-            return None, None, error
-        if event:
-            return event, data, None
+    client = _get_client(user_id)
+    if not client:
+        return None, None, "Calendar not configured for this user."
 
-    if index and user_id in _last_listed:
-        uids = _last_listed[user_id]
-        if 1 <= index <= len(uids):
-            return _get_event_by_uid_sync(user_id, uids[index - 1])
+    try:
+        if match_reference:
+            event, data = _find_event_across_calendars(client, match_reference)
+            if event:
+                return event, data, None
 
-    return None, None, "Could not find a matching event. Try 'list events' first, then reference it by name or number."
+        if index and user_id in _last_listed:
+            entries = _last_listed[user_id]
+            if 1 <= index <= len(entries):
+                _cal_url, uid = entries[index - 1]
+                event, data = _get_event_by_uid_across_calendars(client, uid)
+                if event:
+                    return event, data, None
+
+        return None, None, "Could not find a matching event. Try 'list events' first, then reference it by name or number."
+    except Exception as e:
+        logger.error(f"CalDAV resolve failed: {e}", exc_info=True)
+        return None, None, f"Failed to search calendar: {e}"
 
 
 def _add_event_sync(user_id: int, title: str, start: datetime, end: datetime,
@@ -169,14 +211,14 @@ def _add_event_sync(user_id: int, title: str, start: datetime, end: datetime,
     if not client:
         return None, "Calendar not configured for this user."
     try:
-        cal = _get_default_calendar(client)
+        cal = _get_write_calendar(client, user_id)
         kwargs = {'dtstart': start, 'dtend': end, 'summary': title}
         if location:
             kwargs['location'] = location
         if description:
             kwargs['description'] = description
         event = cal.save_event(**kwargs)
-        return _extract_event_data(event), None
+        return _extract_event_data(event, calendar_name=cal.name), None
     except Exception as e:
         logger.error(f"CalDAV add failed: {e}", exc_info=True)
         return None, f"Failed to add event: {e}"
@@ -240,7 +282,9 @@ async def list_events(user_id: int, user_name: str, days_ahead: int = 7) -> str:
     if not events:
         return f"📅 No events in the next {days_ahead} days for {user_name}."
 
-    _last_listed[user_id] = [e['uid'] for e in events if e.get('uid')]
+    _last_listed[user_id] = [
+        (e.get('calendar_name', ''), e['uid']) for e in events if e.get('uid')
+    ]
 
     lines = [f"📅 Upcoming events for {user_name} (next {days_ahead} days):"]
     for i, e in enumerate(events, 1):
@@ -262,6 +306,8 @@ async def add_event(user_id: int, title: str, start_iso: str, end_iso: str | Non
 
     lines = [f"✅ Event created: {data['summary']}"]
     lines.append(f"📅 {start.strftime('%Y-%m-%d %H:%M')}-{end.strftime('%H:%M')}")
+    if data.get('calendar_name'):
+        lines.append(f"🗓️ Calendar: {data['calendar_name']}")
     if location:
         lines.append(f"📍 {location}")
     return '\n'.join(lines)
